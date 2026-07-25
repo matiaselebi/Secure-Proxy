@@ -1,0 +1,27 @@
+proxy:
+  host: "127.0.0.1"
+  port: 8888
+  # Cuántas conexiones simultáneas puede atender el pool de threads.
+  max_threads: 50
+
+filtering:
+  blocklist_path: "data/blocklist.txt"
+  # Lista generada automáticamente con: python scripts/update_blocklist.py
+  feeds_blocklist_path: "data/blocklist_feeds.txt"
+  # Score de AbuseIPDB (0-100) a partir del cual se bloquea la IP de destino.
+  abuseipdb_min_score: 50
+  # Cuánto tiempo (segundos) se cachea el resultado de una IP consultada.
+  abuseipdb_cache_ttl: 3600
+  check_tor_exit_nodes: true
+  tor_list_cache_ttl: 21600
+
+logging:
+  db_path: "data/proxy_logs.db"
+
+telegram:
+  enabled: false
+
+firewall:
+  # Si es true, además de loguear ejecuta reglas iptables reales.
+  # Si es false (recomendado para empezar), solo imprime/loguea el comando.
+  enabled: false

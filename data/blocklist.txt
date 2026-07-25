@@ -1,0 +1,10 @@
+# Lista negra de dominios, uno por línea. Soporta subdominios: si bloqueás
+# "malicious-example.com", también se bloquea "sub.malicious-example.com".
+# Las líneas que empiezan con # son comentarios.
+
+malicious-example.com
+phishing-test.com
+
+# Podés nutrir esta lista con feeds públicos como:
+# https://urlhaus.abuse.ch/api/  (dominios de malware)
+# https://openphish.com/         (dominios de phishing)
