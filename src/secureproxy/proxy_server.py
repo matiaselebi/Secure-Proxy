@@ -6,6 +6,7 @@ Soporta:
   se decide si se permite abrir el túnel según el host de destino).
 """
 
+import html as html_lib
 import select
 import socket
 import time
@@ -124,6 +125,13 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                 timeout=15,
                 allow_redirects=False,
                 stream=True,
+                # Fuerza a 'requests' a NO usar ningún proxy del sistema/entorno
+                # para esta conexión saliente. Sin esto, si el sistema operativo
+                # tiene configurado este mismo proxy como proxy general (que es
+                # justamente lo que hace SecureProxy.bat), el proceso del proxy
+                # terminaría pidiéndose a sí mismo en bucle — muy notorio al
+                # entrar directo a /dashboard, que no pasa por el túnel CONNECT.
+                proxies={"http": None, "https": None},
             )
         except requests.RequestException as exc:
             self.logger_db.log_request(
@@ -151,6 +159,14 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         )
 
     def do_GET(self) -> None:  # noqa: N802
+        # El dashboard se reconoce por el path, sea que el pedido llegue en
+        # forma relativa ("/dashboard", entrando directo) o absoluta
+        # ("http://127.0.0.1:8888/dashboard", que es como lo manda un
+        # navegador que tiene este mismo proxy configurado a nivel de
+        # sistema). En ambos casos se sirve localmente, sin reenviar nada.
+        if urlsplit(self.path).path.rstrip("/") == "/dashboard":
+            self._serve_dashboard()
+            return
         self._handle_http_method("GET")
 
     def do_POST(self) -> None:  # noqa: N802
@@ -164,6 +180,67 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:  # noqa: N802
         self._handle_http_method("HEAD")
+
+    # ---------- dashboard ----------
+
+    def _serve_dashboard(self) -> None:
+        stats = self.logger_db.stats()
+        total = stats["total_requests"]
+        blocked = stats["blocked_requests"]
+        block_rate = (blocked / total * 100) if total else 0.0
+
+        rows = self.logger_db.recent_blocked(limit=25)
+        if rows:
+            rows_html = "".join(
+                f"<tr><td>{html_lib.escape(str(ts))}</td>"
+                f"<td>{html_lib.escape(str(host))}</td>"
+                f"<td>{html_lib.escape(str(reason))}</td></tr>"
+                for ts, host, reason in rows
+            )
+        else:
+            rows_html = "<tr><td colspan='3'>Todavía no se bloqueó ninguna conexión.</td></tr>"
+
+        page = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="5">
+<title>SecureProxy — Dashboard</title>
+<style>
+  body {{ font-family: -apple-system, "Segoe UI", sans-serif; background:#0f1115; color:#e6e6e6; padding:2rem; }}
+  h1 {{ font-size: 1.4rem; margin-bottom: 0.25rem; }}
+  .subtitle {{ color:#9aa0a6; font-size:0.85rem; margin-top:0; }}
+  .stats {{ display:flex; gap:1.25rem; margin: 1.5rem 0; }}
+  .card {{ background:#1a1d24; border-radius:8px; padding:1rem 1.5rem; min-width:140px; }}
+  .card .value {{ font-size:1.8rem; font-weight:600; }}
+  .card .label {{ color:#9aa0a6; font-size:0.85rem; }}
+  table {{ width:100%; border-collapse: collapse; margin-top:0.5rem; }}
+  th, td {{ text-align:left; padding:0.5rem 0.75rem; border-bottom:1px solid #2a2e37; font-size:0.85rem; }}
+  th {{ color:#9aa0a6; font-weight:500; }}
+</style>
+</head>
+<body>
+  <h1>SecureProxy</h1>
+  <p class="subtitle">Panel de bloqueos — se actualiza solo cada 5 segundos</p>
+  <div class="stats">
+    <div class="card"><div class="value">{total}</div><div class="label">Conexiones totales</div></div>
+    <div class="card"><div class="value">{blocked}</div><div class="label">Bloqueadas</div></div>
+    <div class="card"><div class="value">{block_rate:.1f}%</div><div class="label">Tasa de bloqueo</div></div>
+  </div>
+  <h2>Últimos bloqueos</h2>
+  <table>
+    <tr><th>Fecha/hora (UTC)</th><th>Host</th><th>Motivo</th></tr>
+    {rows_html}
+  </table>
+</body>
+</html>"""
+
+        body = page.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     # ---------- helpers ----------
 

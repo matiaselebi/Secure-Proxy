@@ -1,5 +1,15 @@
 @echo off
 setlocal enabledelayedexpansion
+
+REM --- Auto-elevacion: si no corre como administrador, se relanza pidiendo permisos ---
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+    echo Este panel necesita permisos de administrador para el inicio automatico.
+    echo Se va a pedir confirmacion de Windows...
+    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs" >nul 2>&1
+    exit /b
+)
+
 cd /d "%~dp0"
 
 set TASK_NAME=SecureProxyAutostart
@@ -27,7 +37,7 @@ if not exist "%PYTHON%" (
 :menu
 cls
 echo ================================================
-echo   SecureProxy - Panel de control
+echo   SecureProxy - Panel de control  (admin)
 echo ================================================
 echo.
 echo  1. Iniciar proxy  (ahora y en cada inicio de Windows)
@@ -46,20 +56,50 @@ if "%opcion%"=="5" goto salir
 goto menu
 
 :iniciar
+set HUBO_ERROR=0
 echo.
 echo Registrando el inicio automatico con Windows...
-schtasks /create /tn "%TASK_NAME%" /tr "\"%PYTHONW%\" \"%RUN_SCRIPT%\"" /sc onlogon /rl limited /f >nul
+schtasks /create /tn "%TASK_NAME%" /tr "\"%PYTHONW%\" \"%RUN_SCRIPT%\"" /sc onlogon /rl limited /f >nul 2>&1
+if %errorlevel% neq 0 (
+    echo   ERROR: no se pudo registrar la tarea programada.
+    set HUBO_ERROR=1
+) else (
+    echo   OK.
+)
+
 echo Iniciando el proxy ahora mismo...
-schtasks /run /tn "%TASK_NAME%" >nul
+if %HUBO_ERROR%==0 (
+    schtasks /run /tn "%TASK_NAME%" >nul 2>&1
+    if %errorlevel% neq 0 (
+        echo   ERROR: no se pudo iniciar el proxy via la tarea programada.
+        set HUBO_ERROR=1
+    ) else (
+        echo   OK.
+    )
+) else (
+    echo   Se omite: la tarea no se registro en el paso anterior.
+)
 timeout /t 2 /nobreak >nul
 
 echo Configurando el proxy del sistema de Windows en %PROXY_ADDR%:%PROXY_PORT% ...
-reg add "%REG_KEY%" /v ProxyServer /t REG_SZ /d "%PROXY_ADDR%:%PROXY_PORT%" /f >nul
-reg add "%REG_KEY%" /v ProxyEnable /t REG_DWORD /d 1 /f >nul
+reg add "%REG_KEY%" /v ProxyServer /t REG_SZ /d "%PROXY_ADDR%:%PROXY_PORT%" /f >nul 2>&1
+reg add "%REG_KEY%" /v ProxyEnable /t REG_DWORD /d 1 /f >nul 2>&1
+if %errorlevel% neq 0 (
+    echo   ERROR: no se pudo configurar el proxy del sistema.
+    set HUBO_ERROR=1
+) else (
+    echo   OK.
+)
 
 echo.
-echo Listo. El proxy deberia estar corriendo, y va a arrancar solo cada vez
-echo que inicies sesion en Windows, hasta que elijas la opcion 2 para apagarlo.
+if %HUBO_ERROR%==0 (
+    echo Listo. El proxy deberia estar corriendo, y va a arrancar solo cada vez
+    echo que inicies sesion en Windows, hasta que elijas la opcion 2 para apagarlo.
+) else (
+    echo Hubo al menos un error arriba. Revisa el detalle antes de asumir que
+    echo el proxy esta activo. Si el problema persiste, corre este .bat con
+    echo clic derecho -^> "Ejecutar como administrador" y volve a intentar.
+)
 pause
 goto menu
 
@@ -69,7 +109,7 @@ echo Quitando el inicio automatico...
 schtasks /delete /tn "%TASK_NAME%" /f >nul 2>&1
 
 echo Desactivando el proxy del sistema de Windows...
-reg add "%REG_KEY%" /v ProxyEnable /t REG_DWORD /d 0 /f >nul
+reg add "%REG_KEY%" /v ProxyEnable /t REG_DWORD /d 0 /f >nul 2>&1
 
 echo Deteniendo el proceso del proxy (si estaba corriendo)...
 "%PYTHON%" scripts\stop_proxy.py

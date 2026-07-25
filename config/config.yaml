@@ -6,8 +6,11 @@ proxy:
 
 filtering:
   blocklist_path: "data/blocklist.txt"
-  # Lista generada automáticamente con: python scripts/update_blocklist.py
+  # Listas generadas automáticamente con: python scripts/update_blocklist.py
   feeds_blocklist_path: "data/blocklist_feeds.txt"
+  ip_feeds_blocklist_path: "data/ip_blocklist_feeds.txt"
+  # Cada cuántas horas como mínimo se re-descargan las listas al arrancar el proxy.
+  feeds_update_interval_hours: 6
   # Score de AbuseIPDB (0-100) a partir del cual se bloquea la IP de destino.
   abuseipdb_min_score: 50
   # Cuánto tiempo (segundos) se cachea el resultado de una IP consultada.

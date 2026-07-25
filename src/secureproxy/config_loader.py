@@ -20,9 +20,12 @@ class ProxyConfig:
 @dataclass
 class FilteringConfig:
     blocklist_path: str = "data/blocklist.txt"
-    # Generado automáticamente por scripts/update_blocklist.py (URLhaus + OpenPhish).
-    # Si el archivo todavía no existe (no corriste el script nunca), simplemente se ignora.
+    # Generados automáticamente por scripts/update_blocklist.py (URLhaus + OpenPhish + Feodo Tracker).
+    # Si los archivos todavía no existen (no corriste el script nunca), simplemente se ignoran.
     feeds_blocklist_path: str = "data/blocklist_feeds.txt"
+    ip_feeds_blocklist_path: str = "data/ip_blocklist_feeds.txt"
+    # Cada cuántas horas como mínimo se vuelve a descargar la lista automáticamente al arrancar.
+    feeds_update_interval_hours: float = 6
     abuseipdb_min_score: int = 50
     abuseipdb_cache_ttl: int = 3600
     check_tor_exit_nodes: bool = True

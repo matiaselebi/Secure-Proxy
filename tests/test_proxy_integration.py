@@ -89,3 +89,33 @@ def test_proxy_blocks_blocklisted_domain(proxy_server, monkeypatch):
     )
 
     assert response.status_code == 403
+
+
+def test_dashboard_served_directly(proxy_server):
+    """El dashboard se sirve con un GET directo al proxy (sin usar `proxies=`,
+    exactamente como lo haría un navegador apuntando a http://127.0.0.1:8888/dashboard)."""
+    proxy_port = proxy_server.server_address[1]
+
+    response = requests.get(f"http://127.0.0.1:{proxy_port}/dashboard", timeout=5)
+
+    assert response.status_code == 200
+    assert "SecureProxy" in response.text
+    assert "Conexiones totales" in response.text
+
+
+def test_dashboard_served_via_absolute_uri(proxy_server):
+    """Reproduce el caso real de un navegador con este proxy configurado a
+    nivel de sistema: manda la URL completa (forma absoluta) en vez de solo
+    el path. Debe servirse el dashboard directo, SIN reenviarse a sí mismo
+    (lo cual, sin el fix, produce el colgado que reportó el usuario)."""
+    proxy_port = proxy_server.server_address[1]
+
+    response = requests.get(
+        f"http://127.0.0.1:{proxy_port}/dashboard",
+        proxies={"http": f"http://127.0.0.1:{proxy_port}"},
+        timeout=5,
+    )
+
+    assert response.status_code == 200
+    assert "SecureProxy" in response.text
+    assert "Conexiones totales" in response.text

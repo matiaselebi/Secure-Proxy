@@ -47,6 +47,33 @@ class Blocklist:
         return False
 
 
+class IPBlocklist:
+    """Lista negra de IPs, cargada desde uno o varios archivos de texto
+    (ej. data/ip_blocklist_feeds.txt, generado por update_blocklist.py con
+    la lista de IPs de C2 de Feodo Tracker). Coincidencia exacta, sin rangos."""
+
+    def __init__(self, path: str | list[str]):
+        if isinstance(path, str):
+            path = [path]
+        self.paths = [Path(p) for p in path]
+        self._ips: set[str] = set()
+        self.reload()
+
+    def reload(self) -> None:
+        ips = set()
+        for path in self.paths:
+            if path.exists():
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            ips.add(line)
+        self._ips = ips
+
+    def is_blocked(self, ip: str) -> bool:
+        return ip in self._ips
+
+
 class AbuseIPDBClient:
     """Cliente con cache en memoria para la API de AbuseIPDB."""
 

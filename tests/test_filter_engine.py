@@ -4,7 +4,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from secureproxy.filter_engine import FilterEngine  # noqa: E402
-from secureproxy.threat_intel import AbuseIPDBClient, Blocklist, TorExitNodeList  # noqa: E402
+from secureproxy.threat_intel import (  # noqa: E402
+    AbuseIPDBClient,
+    Blocklist,
+    IPBlocklist,
+    TorExitNodeList,
+)
 
 
 class FakeAbuseIPDBClient(AbuseIPDBClient):
@@ -96,3 +101,24 @@ def test_blocks_tor_exit_node(tmp_path, monkeypatch):
 
     assert decision.blocked is True
     assert "TOR" in decision.reason
+
+
+def test_blocks_feodotracker_c2_ip(tmp_path, monkeypatch):
+    blocklist = make_blocklist(tmp_path, [])
+
+    ip_blocklist_path = tmp_path / "ip_blocklist_feeds.txt"
+    ip_blocklist_path.write_text("9.9.9.9\n")
+    ip_blocklist = IPBlocklist(str(ip_blocklist_path))
+
+    engine = FilterEngine(
+        blocklist, FakeAbuseIPDBClient(), FakeTorExitNodeList(), ip_blocklist=ip_blocklist
+    )
+
+    monkeypatch.setattr(
+        "secureproxy.filter_engine.resolve_host_to_ip", lambda host: "9.9.9.9"
+    )
+
+    decision = engine.evaluate("c2-domain.example.com")
+
+    assert decision.blocked is True
+    assert "Feodo Tracker" in decision.reason
