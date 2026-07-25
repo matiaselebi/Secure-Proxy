@@ -1,33 +1,39 @@
 # SecureProxy
 
-Proxy HTTP/HTTPS de filtrado con inteligencia de amenazas, pensado como capa de
-seguridad para navegación (Brave, curl, o cualquier cliente que soporte proxy)
-corriendo dentro de una máquina virtual aislada (por ejemplo Kali Linux).
+Proxy HTTP/HTTPS de filtrado con inteligencia de amenazas en tiempo real,
+pensado como capa de seguridad adicional para la navegación. Combina una
+lista negra de dominios (curada a mano y alimentada por feeds públicos como
+URLhaus y OpenPhish) con reputación de IP vía AbuseIPDB y detección de nodos
+de salida TOR.
 
-## ¿Qué hace?
+## Qué hace
 
-- Actúa como **proxy directo (forward proxy)**: el cliente lo configura como su
-  salida a internet, y todo el tráfico HTTP/HTTPS pasa por acá antes de llegar
+- Actúa como **proxy directo (forward proxy)**: el cliente lo configura como
+  salida a internet, y todo el tráfico HTTP/HTTPS pasa por él antes de llegar
   al destino.
 - Soporta HTTP normal (GET/POST/etc.) y **HTTPS vía CONNECT** (túnel TCP, sin
-  descifrar el contenido — solo filtra por dominio/IP antes de abrir el túnel).
-- Antes de dejar pasar una conexión, chequea:
-  - Lista negra local de dominios (`data/blocklist.txt`).
+  descifrar el contenido — el filtrado ocurre a nivel de dominio/IP, antes de
+  abrir el túnel).
+- Antes de dejar pasar una conexión, evalúa:
+  - Lista negra de dominios (`data/blocklist.txt`, curada a mano, combinada
+    con `data/blocklist_feeds.txt`, generada automáticamente).
   - Reputación de la IP de destino contra la API de [AbuseIPDB](https://www.abuseipdb.com/).
   - Si la IP de destino es un nodo de salida TOR conocido.
-- Si bloquea algo, lo registra en SQLite, opcionalmente manda una alerta por
-  Telegram, y opcionalmente genera (o ejecuta) una regla `iptables` para
-  bloquear esa IP a nivel de sistema.
+- Cada conexión (permitida o bloqueada) queda registrada en SQLite, con la
+  opción de enviar alertas por Telegram y de generar/ejecutar reglas de
+  firewall (`iptables` en Linux, `netsh advfirewall` en Windows) para
+  bloqueos persistentes.
 
-## Por qué existe (contexto de seguridad importante)
+## Contexto de seguridad
 
-Este proxy **filtra tráfico conocido como malicioso**, pero **no aísla
-ejecución de código**. Si un sitio explota una vulnerabilidad del navegador o
-te hace ejecutar un binario, el proxy no te protege de eso. Para eso la
-recomendación es correr el navegador dentro de una VM (o un contenedor)
-desechable con snapshots, y usar este proxy como una capa adicional que reduce
-la superficie de ataque bloqueando dominios e IPs de mala reputación antes de
-que el navegador llegue a cargarlos.
+Este proxy filtra tráfico hacia dominios e IPs de reputación conocida como
+maliciosa, pero **no aísla la ejecución de código**: si un sitio explota una
+vulnerabilidad del navegador o induce la ejecución de un binario, el proxy no
+ofrece protección contra eso. Para ese escenario, la recomendación es
+complementarlo con aislamiento real (una máquina virtual o contenedor
+desechable, idealmente con snapshots), usando el proxy como una capa
+adicional que reduce la superficie de ataque bloqueando destinos de mala
+reputación antes de que lleguen al navegador.
 
 ## Estructura del proyecto
 
@@ -40,7 +46,7 @@ secure-proxy/
 ├── config/
 │   └── config.yaml          # configuración del proxy
 ├── data/
-│   └── blocklist.txt        # lista negra de dominios
+│   └── blocklist.txt        # lista negra de dominios (curada a mano)
 ├── src/secureproxy/
 │   ├── __init__.py
 │   ├── config_loader.py     # carga config.yaml + variables de entorno
@@ -54,7 +60,7 @@ secure-proxy/
 │   ├── run_proxy.py         # punto de entrada del proxy
 │   ├── stop_proxy.py        # detiene el proxy por PID
 │   └── update_blocklist.py  # descarga URLhaus + OpenPhish
-├── SecureProxy.bat          # menú de control para Windows (iniciar/detener/estado/actualizar)
+├── SecureProxy.bat          # panel de control para Windows
 ├── tests/
 │   ├── test_filter_engine.py
 │   ├── test_logger_db.py
@@ -67,21 +73,21 @@ secure-proxy/
 
 ## Instalación
 
-### Linux / macOS / Kali
+### Linux / macOS
 
 ```bash
-git clone <tu-repo>
+git clone https://github.com/<usuario>/secure-proxy.git
 cd secure-proxy
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # completá tu ABUSEIPDB_API_KEY (opcional; Telegram es opcional y viene desactivado)
+cp .env.example .env   # completar ABUSEIPDB_API_KEY (opcional; Telegram viene desactivado)
 ```
 
 ### Windows
 
 ```powershell
-git clone <tu-repo>
+git clone https://github.com/<usuario>/secure-proxy.git
 cd secure-proxy
 python -m venv venv
 venv\Scripts\activate
@@ -91,31 +97,29 @@ copy .env.example .env
 
 ## Uso
 
-En primer plano (ves los logs en vivo, se corta con Ctrl+C):
+En primer plano (logs visibles en consola, se detiene con Ctrl+C):
 
 ```bash
 python scripts/run_proxy.py
 ```
 
-En Windows, la forma más simple es usar el panel de control: hacé doble clic
-en `SecureProxy.bat` (ver la sección siguiente).
+En Windows, la forma más simple es usar el panel de control: doble clic en
+`SecureProxy.bat` (ver la sección siguiente).
 
-Por defecto levanta en `127.0.0.1:8888`. Para usarlo desde Brave:
+Por defecto levanta en `127.0.0.1:8888`. Para usarlo desde un navegador:
 
-1. **Windows**: Configuración de Windows → Red e Internet → Proxy → activar
-   "Usar un servidor proxy" con dirección `127.0.0.1` y puerto `8888`. Esto
-   aplica a Brave y a la mayoría de las apps de Windows. También podés lanzar
-   Brave directo con el proxy sin tocar la config del sistema:
+1. **Windows**: Configuración → Red e Internet → Proxy → activar "Usar un
+   servidor proxy" con dirección `127.0.0.1` y puerto `8888`. Aplica a la
+   mayoría de las apps de Windows, incluidos navegadores basados en
+   Chromium. También puede lanzarse el navegador directo con el proxy sin
+   tocar la configuración del sistema, por ejemplo:
    `brave.exe --proxy-server="127.0.0.1:8888"`.
-2. **Linux/Kali**: Configuración → Sistema → proxy, o
+2. **Linux**: Configuración → Sistema → proxy, o
    `brave-browser --proxy-server="127.0.0.1:8888"`.
-3. Navegá normal. Si un dominio está en la blocklist o tiene mala reputación,
-   vas a ver un error de conexión rechazada y quedará registrado en
-   `data/proxy_logs.db`.
+3. Al navegar, si un dominio está en la blocklist o tiene mala reputación,
+   la conexión se rechaza y queda registrada en `data/proxy_logs.db`.
 
-Para probarlo rápido con curl, sin tocar el navegador (funciona igual en
-Windows con PowerShell o `cmd`, si tenés curl instalado — viene incluido
-desde Windows 10):
+Prueba rápida con curl, sin depender del navegador:
 
 ```bash
 curl -x http://127.0.0.1:8888 http://example.com
@@ -124,102 +128,80 @@ curl -x http://127.0.0.1:8888 https://example.com   # prueba el túnel CONNECT
 
 ### Panel de control en Windows (`SecureProxy.bat`)
 
-Una vez que hiciste la instalación inicial (venv + `pip install`), no volvés
-a tocar la consola: doble clic en `SecureProxy.bat` te muestra un menú de
-texto con 5 opciones.
+Tras la instalación inicial (venv + `pip install`), la operación diaria se
+hace con `SecureProxy.bat`, que ofrece un menú con 5 opciones:
 
-**1. Iniciar proxy** hace tres cosas: registra una tarea en el Programador de
-tareas de Windows para que el proxy arranque solo cada vez que iniciás sesión
-(oculto, sin ventana de consola, usando `pythonw.exe`), lo arranca ahora
-mismo sin esperar a que reinicies, y configura el proxy del sistema de
-Windows (`127.0.0.1:8888`) para que Brave y la mayoría de las apps lo usen
-automáticamente sin que tengas que tocar la configuración de cada una.
+1. **Iniciar proxy**: registra una tarea en el Programador de tareas de
+   Windows para que el proxy arranque automáticamente en cada inicio de
+   sesión (en segundo plano, sin ventana de consola, vía `pythonw.exe`), lo
+   inicia de inmediato, y configura el proxy del sistema de Windows
+   (`127.0.0.1:8888`) para que el navegador y la mayoría de las aplicaciones
+   lo usen sin configuración adicional.
+2. **Detener proxy**: elimina esa tarea programada, desactiva la
+   configuración de proxy del sistema, y detiene el proceso si estaba
+   corriendo.
+3. **Ver estado**: informa si el inicio automático está activo, si el
+   proceso está corriendo, y si el proxy del sistema está habilitado.
+4. **Actualizar listas de amenazas**: descarga los feeds de URLhaus y
+   OpenPhish y regenera `data/blocklist_feeds.txt`.
+5. **Salir**: cierra el menú sin realizar cambios.
 
-**2. Detener proxy** hace lo inverso: borra esa tarea programada (así no
-vuelve a arrancar solo la próxima vez que prendas la PC), apaga la
-configuración de proxy del sistema, y mata el proceso si estaba corriendo en
-ese momento.
+Mientras no se elija la opción 2, el proxy sigue arrancando automáticamente
+en cada inicio de sesión, incluso si se cierra el menú o se reinicia el
+equipo.
 
-**3. Ver estado** te dice, sin ambigüedad, si el inicio automático está
-activado, si el proceso está corriendo, y si el proxy del sistema está
-activo — útil para no quedarte con la duda de en qué quedó todo.
+## Alcance del filtrado por proxy del sistema
 
-**4. Actualizar listas de amenazas** descarga los feeds de URLhaus y
-OpenPhish y regenera `data/blocklist_feeds.txt` (ver la sección siguiente).
+Al configurar el proxy a nivel de sistema (opción 1 del panel), la
+configuración se aplica en `Internet Settings` de Windows, la misma que usan
+Chrome, Edge y la mayoría de las aplicaciones de escritorio que respetan la
+configuración de red del sistema operativo. Esto extiende el filtrado más
+allá del navegador a cualquier aplicación que use esa configuración.
 
-**5. Salir** cierra el menú sin tocar nada.
-
-Importante: mientras no elijas la opción 2, el proxy va a seguir
-arrancando solo cada vez que prendas la PC e inicies sesión, aunque cierres
-el menú o reinicies. Es la opción 2 la que lo apaga *y* evita que vuelva a
-prenderse solo.
-
-### Aviso sobre correrlo en tu Windows "normal" (sin VM)
-
-Este proxy filtra dominios/IPs de mala reputación, pero **no aísla la
-ejecución de código**. Si lo corrés directo en tu Windows de uso diario (sin
-una VM de por medio), seguís teniendo la protección de "no me conecto a
-sitios conocidos como maliciosos", pero no la protección de "si un sitio
-explota una vulnerabilidad del navegador, no puede tocar mi PC" — para eso
-seguís necesitando aislamiento real (VM, contenedor, etc.). Ambas cosas son
-válidas y complementarias, pero no son lo mismo.
+Es importante ser preciso sobre el alcance real: el proxy únicamente
+inspecciona el tráfico de red que decide enrutar a través de él. No accede,
+escanea ni modifica archivos en disco. Aplicaciones que gestionan su propia
+conexión de red por fuera de la configuración del sistema (algo común en
+ciertos launchers de terceros) simplemente no pasan por este filtro.
 
 ## Listas de amenazas automáticas (URLhaus + OpenPhish)
 
-`data/blocklist.txt` es tu lista manual (para agregar dominios puntuales a
-mano). `data/blocklist_feeds.txt` es una lista aparte que se genera sola
-corriendo `python scripts/update_blocklist.py` (o la opción 4 del menú), y
-combina dos fuentes públicas y gratuitas:
+`data/blocklist.txt` es la lista curada a mano (para agregar dominios
+puntuales). `data/blocklist_feeds.txt` se genera automáticamente ejecutando
+`python scripts/update_blocklist.py` (o la opción 4 del panel), combinando
+dos fuentes públicas y gratuitas:
 
-- **URLhaus** (abuse.ch): dominios que están repartiendo malware activamente
-  en este momento.
+- **URLhaus** (abuse.ch): dominios que distribuyen malware activamente.
 - **OpenPhish**: dominios usados en campañas de phishing activas.
 
-El proxy lee ambos archivos juntos automáticamente cada vez que arranca. No
-hace falta reiniciar el proxy después de correr el update, salvo que ya
-estuviera corriendo (ahí sí conviene reiniciarlo desde el menú para que tome
-la lista nueva). Esta lista no se actualiza sola de forma continua: cada vez
-que la corras vas a tener la versión más reciente de esos feeds en ese
-momento.
-
-## Proxy a nivel de todo el sistema, y una aclaración sobre archivos locales
-
-Cuando usás la opción 1 del menú, no solo se configura Brave: se cambia la
-configuración de proxy de Windows a nivel de sistema (`Internet Settings` de
-Windows), que es la misma que usan Chrome, Edge, y la mayoría de las
-aplicaciones de escritorio que respetan la configuración de red del sistema
-operativo. Eso significa que, además de tu navegador, cualquier otro programa
-que use esa configuración también va a pasar su tráfico por el filtro.
-
-Dicho esto, es importante ser preciso sobre qué significa esto en la
-práctica: el proxy **solo mira tráfico de red que decide pasar por él**. No
-escanea, no indexa, no toca ni puede borrar ningún archivo de tu disco —no
-tiene ni una línea de código para eso. Si tenés juegos pirateados, cracks, o
-lo que sea guardado localmente, el proxy no los va a tocar bajo ninguna
-circunstancia. Lo único que podría pasar es lo contrario: muchos
-launchers/cracks usan su propia conexión de red por fuera de la
-configuración de proxy de Windows, así que es bastante probable que ni
-siquiera pasen por el filtro y sigan funcionando exactamente igual que
-antes, para bien (no se rompen) y para mal (no quedan protegidos por esta
-capa en particular).
+El proxy carga ambos archivos en conjunto en cada arranque. Si el proxy ya
+estaba corriendo, conviene reiniciarlo tras un update para que tome la lista
+nueva. La actualización no es continua: cada ejecución del script refleja el
+estado de esos feeds en ese momento.
 
 ## Configuración (`config/config.yaml`)
 
-- `proxy.host` / `proxy.port`: dónde escucha el proxy.
-- `filtering.blocklist_path`: archivo de dominios bloqueados a mano (uno por línea).
-- `filtering.feeds_blocklist_path`: archivo generado por `update_blocklist.py` (URLhaus + OpenPhish).
+- `proxy.host` / `proxy.port`: dirección y puerto donde escucha el proxy.
+- `filtering.blocklist_path`: archivo de dominios bloqueados a mano.
+- `filtering.feeds_blocklist_path`: archivo generado por `update_blocklist.py`.
 - `filtering.abuseipdb_min_score`: score de 0 a 100 a partir del cual se
   bloquea una IP (default 50).
-- `filtering.check_tor_nodes`: si bloquea salidas hacia nodos TOR conocidos.
-- `firewall.enabled`: si además de loguear, ejecuta reglas `iptables` reales
-  (por defecto `false` — modo dry-run, solo imprime el comando).
-- `telegram.enabled`: si manda alertas por Telegram.
+- `filtering.check_tor_exit_nodes`: si bloquea salidas hacia nodos TOR
+  conocidos.
+- `firewall.enabled`: si además de loguear, ejecuta reglas de firewall reales
+  (por defecto `false` — modo dry-run, solo genera el comando).
+- `telegram.enabled`: si envía alertas por Telegram (opcional, desactivado
+  por defecto).
 
 ## Tests
 
 ```bash
 pytest tests/ -v
 ```
+
+Cobertura actual: motor de filtrado (blocklist, AbuseIPDB, nodos TOR),
+logging en SQLite, integración end-to-end del servidor proxy (tráfico
+permitido y bloqueado), y parseo de los feeds de amenazas.
 
 ## Docker
 
@@ -228,15 +210,23 @@ docker build -t secure-proxy -f docker/Dockerfile .
 docker run -p 8888:8888 --env-file .env secure-proxy
 ```
 
-## Roadmap / ideas para seguir sumando
+## Roadmap
 
-- Cache persistente de reputación de IPs (hoy es en memoria).
-- Dashboard web simple para ver bloqueos en tiempo real.
+- Cache persistente de reputación de IPs (actualmente en memoria).
+- Dashboard web para visualizar bloqueos en tiempo real.
 - Endpoint de métricas estilo Prometheus (`/metrics`).
-- Soporte de reglas por regex además de dominios exactos.
+- Soporte de reglas por expresión regular además de dominios exactos.
 
 ## Aviso
 
-Proyecto educativo/portfolio. No lo uses como única defensa contra amenazas
-reales: combinalo con aislamiento real (VM/snapshots), un antivirus, y buenas
-prácticas de navegación.
+Proyecto educativo/de portfolio. No debe usarse como única defensa contra
+amenazas reales: se recomienda combinarlo con aislamiento real (VM o
+contenedores), una solución antivirus, y buenas prácticas de navegación.
+
+## Autor
+
+Matias Yamil Elebi — [LinkedIn](#) · [GitHub](#)
+
+## Licencia
+
+MIT
