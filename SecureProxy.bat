@@ -18,6 +18,7 @@ set PYTHON=%~dp0venv\Scripts\python.exe
 set RUN_SCRIPT=%~dp0scripts\run_proxy.py
 set PROXY_ADDR=127.0.0.1
 set PROXY_PORT=8888
+set DASHBOARD_URL=http://127.0.0.1:8888/dashboard
 set REG_KEY=HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings
 
 if not exist "%PYTHON%" (
@@ -43,16 +44,22 @@ echo.
 echo  1. Iniciar proxy  (ahora y en cada inicio de Windows)
 echo  2. Detener proxy  (y desactivar el inicio automatico)
 echo  3. Ver estado
-echo  4. Actualizar listas de amenazas (URLhaus + OpenPhish)
-echo  5. Salir
+echo  4. Actualizar listas de amenazas (URLhaus + OpenPhish + Feodo Tracker)
+echo  5. Agregar dominio a la lista blanca (permitir siempre)
+echo  6. Agregar dominio a la lista negra (bloquear siempre)
+echo  7. Borrar cache de reputacion de IPs (AbuseIPDB)
+echo  8. Salir
 echo.
-set /p opcion="Elegi una opcion (1-5): "
+set /p opcion="Elegi una opcion (1-8): "
 
 if "%opcion%"=="1" goto iniciar
 if "%opcion%"=="2" goto detener
 if "%opcion%"=="3" goto estado
 if "%opcion%"=="4" goto actualizar
-if "%opcion%"=="5" goto salir
+if "%opcion%"=="5" goto permitir
+if "%opcion%"=="6" goto bloquear
+if "%opcion%"=="7" goto borrar_cache
+if "%opcion%"=="8" goto salir
 goto menu
 
 :iniciar
@@ -141,6 +148,8 @@ if %errorlevel%==0 (
 ) else (
     echo Proxy del sistema de Windows   : desactivado
 )
+
+"%PYTHON%" -c "import sys; sys.path.insert(0, 'src'); from secureproxy.ip_reputation_cache import PersistentIPCache; print('Entradas en cache (AbuseIPDB)  :', PersistentIPCache('data/ip_reputation_cache.db').count())" 2>nul
 echo.
 pause
 goto menu
@@ -149,6 +158,61 @@ goto menu
 echo.
 "%PYTHON%" scripts\update_blocklist.py
 echo.
+pause
+goto menu
+
+:permitir
+echo.
+set /p NUEVO_DOMINIO="Dominio a permitir siempre (ej: ejemplo.com): "
+if "%NUEVO_DOMINIO%"=="" (
+    echo No ingresaste ningun dominio.
+    pause
+    goto menu
+)
+"%PYTHON%" -c "import sys; sys.path.insert(0, 'src'); from secureproxy.threat_intel import Allowlist; Allowlist('data/allowlist.txt').add_and_reload('%NUEVO_DOMINIO%'); print('Agregado a la lista blanca:', '%NUEVO_DOMINIO%')"
+echo.
+echo Si el proxy esta corriendo, el cambio se aplica solo en unos segundos
+echo (recarga automatica en segundo plano), sin necesidad de reiniciarlo.
+echo Tambien lo podes administrar (agregar o quitar) desde el dashboard:
+echo %DASHBOARD_URL%
+pause
+goto menu
+
+:bloquear
+echo.
+set /p NUEVO_DOMINIO="Dominio a bloquear siempre (ej: ejemplo.com): "
+if "%NUEVO_DOMINIO%"=="" (
+    echo No ingresaste ningun dominio.
+    pause
+    goto menu
+)
+"%PYTHON%" -c "import sys; sys.path.insert(0, 'src'); from secureproxy.threat_intel import Blocklist; Blocklist('data/blocklist.txt').add_and_reload('%NUEVO_DOMINIO%'); print('Agregado a la lista negra manual:', '%NUEVO_DOMINIO%')"
+echo.
+echo Si el proxy esta corriendo, el cambio se aplica solo en unos segundos
+echo (recarga automatica en segundo plano), sin necesidad de reiniciarlo.
+pause
+goto menu
+
+:borrar_cache
+echo.
+echo Esto borra el cache de reputacion de IPs (AbuseIPDB), tanto en memoria
+echo como en disco (data\ip_reputation_cache.db). La proxima vez que se
+echo consulte una IP, se le vuelve a preguntar a la API en vez de usar un
+echo resultado guardado.
+set /p CONFIRMA="Confirmar? (s/n): "
+if /i not "%CONFIRMA%"=="s" (
+    echo Cancelado.
+    goto menu
+)
+echo.
+echo Intentando borrarlo en caliente (proxy corriendo)...
+powershell -NoProfile -Command "try { Invoke-WebRequest -Uri '%DASHBOARD_URL:dashboard=clear-cache%' -UseBasicParsing -TimeoutSec 3 | Out-Null; Write-Host '  OK: cache borrado.' } catch { Write-Host '  El proxy no parece estar corriendo, no se pudo borrar en caliente.'; exit 1 }"
+if %errorlevel% neq 0 (
+    echo.
+    echo Inicia el proxy primero (opcion 1) si queres borrar el cache al
+    echo instante, o dejalo asi: el cache en disco no crece indefinidamente
+    echo y las entradas viejas van a volver a consultarse solas cuando venzan.
+)
 pause
 goto menu
 

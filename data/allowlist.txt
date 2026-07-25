@@ -1,0 +1,8 @@
+# Lista blanca de dominios, uno por línea. Un dominio acá gana por sobre
+# CUALQUIER otro chequeo (blocklist, TOR, AbuseIPDB, IPBlocklist/Feodo
+# Tracker). Soporta subdominios igual que blocklist.txt: si permitís
+# "example.com", también se permite "sub.example.com".
+#
+# Se puede editar a mano, o agregar dominios apretando "Permitir" en la
+# tabla de últimos bloqueos del dashboard (eso agrega la línea acá mismo y
+# recarga la lista en caliente, sin reiniciar el proxy).

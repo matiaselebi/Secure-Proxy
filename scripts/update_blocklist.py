@@ -3,7 +3,7 @@
 genera data/blocklist_feeds.txt (dominios) y data/ip_blocklist_feeds.txt (IPs).
 
 Estos archivos se combinan automáticamente con data/blocklist.txt (lista
-manual de dominios) cuando corre el proxy — no hace falta tocar nada más.
+manual de dominios) cuando corre el proxy - no hace falta tocar nada más.
 
 Se puede correr manualmente (opción 4 del menú `SecureProxy.bat`, que siempre
 fuerza la descarga), o dejar que `scripts/run_proxy.py` lo haga solo al
@@ -37,7 +37,7 @@ IP_OUTPUT_PATH = PROJECT_ROOT / "data" / "ip_blocklist_feeds.txt"
 
 
 def fetch_urlhaus_domains() -> set[str]:
-    """URLhaus publica un 'hostfile' en formato `0.0.0.0 dominio.com` — ya viene
+    """URLhaus publica un 'hostfile' en formato `0.0.0.0 dominio.com` - ya viene
     listo para usar como blocklist, solo hay que quedarse con la segunda columna."""
     domains: set[str] = set()
     try:

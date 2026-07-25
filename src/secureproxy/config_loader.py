@@ -24,10 +24,17 @@ class FilteringConfig:
     # Si los archivos todavía no existen (no corriste el script nunca), simplemente se ignoran.
     feeds_blocklist_path: str = "data/blocklist_feeds.txt"
     ip_feeds_blocklist_path: str = "data/ip_blocklist_feeds.txt"
+    # Lista blanca manual: gana por sobre cualquier otro chequeo. Se edita a
+    # mano o vía el botón "Permitir" del dashboard.
+    allowlist_path: str = "data/allowlist.txt"
     # Cada cuántas horas como mínimo se vuelve a descargar la lista automáticamente al arrancar.
     feeds_update_interval_hours: float = 6
     abuseipdb_min_score: int = 50
     abuseipdb_cache_ttl: int = 3600
+    # Cache persistente (SQLite) de resultados de AbuseIPDB: sobrevive a
+    # reinicios del proxy, para no volver a gastar cupo de la API (1000
+    # consultas/día en el plan gratuito) por una IP ya consultada hace poco.
+    abuseipdb_cache_db_path: str = "data/ip_reputation_cache.db"
     check_tor_exit_nodes: bool = True
     tor_list_cache_ttl: int = 21600
 

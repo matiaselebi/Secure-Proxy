@@ -9,12 +9,17 @@ filtering:
   # Listas generadas automáticamente con: python scripts/update_blocklist.py
   feeds_blocklist_path: "data/blocklist_feeds.txt"
   ip_feeds_blocklist_path: "data/ip_blocklist_feeds.txt"
+  # Lista blanca manual: gana por sobre blocklist, TOR y AbuseIPDB. Se puede
+  # editar a mano o agregar dominios con el botón "Permitir" del dashboard.
+  allowlist_path: "data/allowlist.txt"
   # Cada cuántas horas como mínimo se re-descargan las listas al arrancar el proxy.
   feeds_update_interval_hours: 6
   # Score de AbuseIPDB (0-100) a partir del cual se bloquea la IP de destino.
   abuseipdb_min_score: 50
   # Cuánto tiempo (segundos) se cachea el resultado de una IP consultada.
   abuseipdb_cache_ttl: 3600
+  # Archivo SQLite donde se persiste el cache de AbuseIPDB entre reinicios.
+  abuseipdb_cache_db_path: "data/ip_reputation_cache.db"
   check_tor_exit_nodes: true
   tor_list_cache_ttl: 21600
 

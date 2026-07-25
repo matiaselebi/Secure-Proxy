@@ -46,6 +46,61 @@ class Blocklist:
                 return True
         return False
 
+    def add_and_reload(self, domain: str) -> None:
+        """Agrega un dominio al primer archivo (el manual, paths[0]) y
+        recarga en caliente. Pensado para el botón "Permitir"/"Bloquear" del
+        dashboard, y para la opción equivalente del menú .bat."""
+        domain = domain.strip().lower()
+        if not domain:
+            return
+        target_path = self.paths[0]
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        if domain not in self.manual_entries():
+            with open(target_path, "a", encoding="utf-8") as f:
+                f.write(domain + "\n")
+        self.reload()
+
+    def remove_and_reload(self, domain: str) -> None:
+        """Saca un dominio del primer archivo (el manual, paths[0]) y
+        recarga en caliente. Solo afecta la lista manual: si el mismo
+        dominio también está en un archivo generado por feeds automáticos
+        (paths[1] en adelante), ese no se toca acá."""
+        domain = domain.strip().lower()
+        target_path = self.paths[0]
+        if not target_path.exists():
+            return
+        lines = target_path.read_text(encoding="utf-8").splitlines()
+        kept = [line for line in lines if line.strip().lower() != domain]
+        target_path.write_text(
+            "\n".join(kept) + ("\n" if kept else ""), encoding="utf-8"
+        )
+        self.reload()
+
+    def manual_entries(self) -> list[str]:
+        """Dominios definidos a mano en el primer archivo (paths[0]), sin
+        contar comentarios ni lo que viene de feeds automáticos. Pensado
+        para mostrarlos en el dashboard."""
+        target_path = self.paths[0]
+        if not target_path.exists():
+            return []
+        entries = set()
+        for line in target_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip().lower()
+            if line and not line.startswith("#"):
+                entries.add(line)
+        return sorted(entries)
+
+
+class Allowlist(Blocklist):
+    """Lista blanca de dominios: gana por sobre CUALQUIER otro chequeo
+    (blocklist, TOR, AbuseIPDB, IPBlocklist). Reutiliza toda la lógica de
+    coincidencia y edición de Blocklist (dominio exacto + subdominios, alta,
+    baja y listado), solo cambia el nombre del método de consulta para que
+    se lea claro en el motor de filtrado."""
+
+    def is_allowed(self, domain: str) -> bool:
+        return self.is_blocked(domain)
+
 
 class IPBlocklist:
     """Lista negra de IPs, cargada desde uno o varios archivos de texto
@@ -75,13 +130,15 @@ class IPBlocklist:
 
 
 class AbuseIPDBClient:
-    """Cliente con cache en memoria para la API de AbuseIPDB."""
+    """Cliente con cache en memoria (y opcionalmente persistente en disco)
+    para la API de AbuseIPDB."""
 
     API_URL = "https://api.abuseipdb.com/api/v2/check"
 
-    def __init__(self, api_key: str, cache_ttl: int = 3600):
+    def __init__(self, api_key: str, cache_ttl: int = 3600, persistent_cache=None):
         self.api_key = api_key
         self.cache_ttl = cache_ttl
+        self.persistent_cache = persistent_cache  # PersistentIPCache | None
         self._cache: dict[str, tuple[int, float]] = {}  # ip -> (score, ts)
 
     def get_abuse_score(self, ip: str) -> int:
@@ -93,6 +150,15 @@ class AbuseIPDBClient:
         cached = self._cache.get(ip)
         if cached and (time.time() - cached[1]) < self.cache_ttl:
             return cached[0]
+
+        # Cache en memoria: no la tenemos (recién reiniciamos, por ejemplo).
+        # Antes de gastar cupo de la API, nos fijamos si ya la consultamos en
+        # una corrida anterior y quedó guardada en disco.
+        if self.persistent_cache is not None:
+            persisted_score = self.persistent_cache.get(ip, self.cache_ttl)
+            if persisted_score is not None:
+                self._cache[ip] = (persisted_score, time.time())
+                return persisted_score
 
         try:
             response = requests.get(
@@ -107,7 +173,16 @@ class AbuseIPDBClient:
             score = 0
 
         self._cache[ip] = (score, time.time())
+        if self.persistent_cache is not None:
+            self.persistent_cache.set(ip, score)
         return score
+
+    def clear_cache(self) -> None:
+        """Borra el cache en memoria y, si hay uno configurado, también el
+        persistente. Pensado para el botón "Borrar cache" del dashboard."""
+        self._cache.clear()
+        if self.persistent_cache is not None:
+            self.persistent_cache.clear()
 
 
 class TorExitNodeList:

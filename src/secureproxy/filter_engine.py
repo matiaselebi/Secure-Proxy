@@ -1,10 +1,11 @@
-"""Motor de decisión: junta blocklist + IPBlocklist (Feodo Tracker) + AbuseIPDB
-+ nodos TOR y decide bloquear o no."""
+"""Motor de decisión: allowlist + blocklist + IPBlocklist (Feodo Tracker) +
+AbuseIPDB + nodos TOR, y decide bloquear o no."""
 
 from dataclasses import dataclass
 
 from .threat_intel import (
     AbuseIPDBClient,
+    Allowlist,
     Blocklist,
     IPBlocklist,
     TorExitNodeList,
@@ -26,6 +27,7 @@ class FilterEngine:
         abuseipdb_client: AbuseIPDBClient,
         tor_list: TorExitNodeList,
         ip_blocklist: IPBlocklist | None = None,
+        allowlist: Allowlist | None = None,
         abuseipdb_min_score: int = 50,
         check_tor_exit_nodes: bool = True,
     ):
@@ -33,16 +35,21 @@ class FilterEngine:
         self.abuseipdb_client = abuseipdb_client
         self.tor_list = tor_list
         self.ip_blocklist = ip_blocklist
+        self.allowlist = allowlist
         self.abuseipdb_min_score = abuseipdb_min_score
         self.check_tor_exit_nodes = check_tor_exit_nodes
 
     def evaluate(self, host: str) -> FilterDecision:
         """Decide si una conexión hacia `host` debe bloquearse.
 
-        Orden de chequeo (de más barato a más caro): blocklist local por
-        dominio, lista de IPs de C2 conocidas (Feodo Tracker), nodos TOR, y
-        por último reputación de IP vía AbuseIPDB.
+        Orden de chequeo: primero la allowlist (gana por sobre todo lo
+        demás), después blocklist local por dominio, lista de IPs de C2
+        conocidas (Feodo Tracker), nodos TOR, y por último reputación de IP
+        vía AbuseIPDB.
         """
+        if self.allowlist is not None and self.allowlist.is_allowed(host):
+            return FilterDecision(blocked=False, reason="dominio en allowlist")
+
         if self.blocklist.is_blocked(host):
             return FilterDecision(blocked=True, reason=f"dominio en blocklist: {host}")
 
