@@ -1,6 +1,7 @@
 """Test de integración: levanta el proxy real en un puerto de prueba y hace
 pedidos a través de él contra un servidor HTTP local de prueba."""
 
+import socket
 import sys
 import threading
 import time
@@ -119,3 +120,22 @@ def test_dashboard_served_via_absolute_uri(proxy_server):
     assert response.status_code == 200
     assert "SecureProxy" in response.text
     assert "Conexiones totales" in response.text
+
+
+def test_stalled_client_does_not_hang_forever(proxy_server):
+    """Un cliente que se conecta y nunca manda nada (pestaña colgada, red que
+    se corta a mitad de camino) no debe dejar el hilo del servidor esperando
+    para siempre: el timeout de socket tiene que cortar la conexión sola."""
+    proxy_server.RequestHandlerClass.timeout = 0.5  # más corto, solo para el test
+
+    proxy_port = proxy_server.server_address[1]
+    sock = socket.create_connection(("127.0.0.1", proxy_port), timeout=5)
+
+    start = time.time()
+    data = sock.recv(1024)  # no mandamos nada: esperamos que el server corte solo
+    elapsed = time.time() - start
+
+    sock.close()
+
+    assert data == b""  # el servidor cerró la conexión por inactividad
+    assert elapsed < 3  # se cortó rápido, no se quedó colgado

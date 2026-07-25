@@ -34,6 +34,13 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
 
+    # Tiempo máximo de inactividad esperando datos del cliente (leer la línea
+    # de pedido, headers, etc). Sin esto, un cliente que se cuelga a mitad de
+    # camino (pestaña cerrada de golpe, red que se corta) deja el hilo
+    # esperando para siempre. No aplica al túnel CONNECT ya establecido: ese
+    # tiene su propia lógica de inactividad en _relay (ver do_CONNECT).
+    timeout = 5
+
     def log_message(self, format: str, *args) -> None:  # noqa: A002
         # Silenciamos el logging default a stderr; ya logueamos nosotros a SQLite.
         pass
@@ -68,10 +75,23 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         self.logger_db.log_request(
             self.client_address[0], "CONNECT", host, port, "-", False, duration_ms=duration_ms,
         )
+
+        # A partir de acá el socket pasa a ser un túnel de bytes crudos (TLS),
+        # potencialmente de larga duración (streaming, descargas, WebSockets).
+        # Le sacamos el timeout de 30s de la fase de headers: la inactividad
+        # del túnel la maneja _relay con su propio límite de 60s sin tráfico
+        # en NINGUNA dirección (no 30s desde la última lectura puntual).
+        self.connection.settimeout(None)
+        # No reutilizamos esta conexión para más pedidos HTTP después del
+        # túnel: evita que el parser de keep-alive intente leer una nueva
+        # request-line sobre un socket que ya se usó para bytes de TLS.
+        self.close_connection = True
+
         self._relay(self.connection, remote)
 
     def _relay(self, client_sock: socket.socket, remote_sock: socket.socket) -> None:
-        """Reenvía bytes en ambas direcciones hasta que alguno de los dos lados cierre."""
+        """Reenvía bytes en ambas direcciones hasta que alguno de los dos lados
+        cierre, o hasta que pasen 60s sin tráfico en ninguna dirección."""
         sockets = [client_sock, remote_sock]
         try:
             while True:
@@ -91,7 +111,14 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         except OSError:
             pass
         finally:
-            remote_sock.close()
+            try:
+                remote_sock.close()
+            except OSError:
+                pass
+            try:
+                client_sock.close()
+            except OSError:
+                pass
 
     # ---------- HTTP normal (GET/POST/etc.) ----------
 
