@@ -11,3 +11,4 @@ data/tor_exit_nodes_cache.txt
 *.egg-info/
 .vscode/
 .idea/
+data/proxy_logs.db-journal

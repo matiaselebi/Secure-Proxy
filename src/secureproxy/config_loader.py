@@ -37,6 +37,10 @@ class FilteringConfig:
     abuseipdb_cache_db_path: str = "data/ip_reputation_cache.db"
     check_tor_exit_nodes: bool = True
     tor_list_cache_ttl: int = 21600
+    # "enforce" (default): bloquea de verdad. "audit": evalúa y registra qué
+    # se hubiera bloqueado, pero deja pasar todo el tráfico. Útil para
+    # probar una lista o umbral nuevo sin riesgo antes de aplicarlo en serio.
+    mode: str = "enforce"
 
 
 @dataclass

@@ -22,6 +22,11 @@ filtering:
   abuseipdb_cache_db_path: "data/ip_reputation_cache.db"
   check_tor_exit_nodes: true
   tor_list_cache_ttl: 21600
+  # "enforce" (default): bloquea de verdad las conexiones que matchean una
+  # regla. "audit": evalúa y registra en el dashboard/logs qué se hubiera
+  # bloqueado, pero deja pasar todo el tráfico igual - útil para probar una
+  # lista o umbral de AbuseIPDB nuevo sin arriesgarte a cortar algo legítimo.
+  mode: "enforce"
 
 logging:
   db_path: "data/proxy_logs.db"

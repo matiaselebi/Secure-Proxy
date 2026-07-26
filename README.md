@@ -3,12 +3,19 @@
 ![CI](https://github.com/matiaselebi/secure-proxy/actions/workflows/ci.yml/badge.svg)
 
 Proxy HTTP/HTTPS de filtrado con inteligencia de amenazas en tiempo real,
-pensado como capa de seguridad adicional para la navegación. Combina una
-lista negra de dominios (curada a mano y alimentada por feeds públicos como
-URLhaus y OpenPhish), una lista de IPs de servidores de comando-y-control de
-botnets (Feodo Tracker), reputación de IP vía AbuseIPDB, y detección de
-nodos de salida TOR. Las listas automáticas se actualizan solas en segundo
-plano cada vez que arranca el proxy.
+pensado como una capa de un stack personal de seguridad en profundidad
+("defense in depth"): junto con [SecureDNS](https://github.com/matiaselebi/secure-dns)
+(filtrado a nivel de resolución de nombres) y una futura VPN casera
+(SecureVPN, transporte cifrado), cada proyecto cubre una capa distinta del
+tráfico de red de una sola máquina, sin superponerse entre sí. Ver
+"Limitaciones" más abajo para qué es y qué no es este proyecto.
+
+Combina una lista negra de dominios (curada a mano y alimentada por feeds
+públicos como URLhaus y OpenPhish), una lista de IPs de servidores de
+comando-y-control de botnets (Feodo Tracker), reputación de IP vía
+AbuseIPDB (con circuit breaker si la API falla, ver más abajo), y detección
+de nodos de salida TOR. Las listas automáticas se actualizan solas en
+segundo plano cada vez que arranca el proxy.
 
 ## Qué hace
 
@@ -43,6 +50,31 @@ complementarlo con aislamiento real (una máquina virtual o contenedor
 desechable, idealmente con snapshots), usando el proxy como una capa
 adicional que reduce la superficie de ataque bloqueando destinos de mala
 reputación antes de que lleguen al navegador.
+
+## Limitaciones
+
+Documentar explícitamente qué NO hace este proyecto es, a propósito, parte
+del diseño (evita dar una falsa sensación de cobertura total):
+
+- **No descifra ni inspecciona TLS** (sin MITM): el filtrado de HTTPS es por
+  dominio/IP antes de abrir el túnel CONNECT, nunca por contenido de la
+  página. Ver [ADR 0001](docs/adr/0001-forward-proxy-no-tls-inspection.md)
+  para la justificación de esta decisión (evitar instalar una CA raíz de
+  confianza en el sistema).
+- **No aísla la ejecución de código** (ver "Contexto de seguridad" arriba).
+- **Depende de que la aplicación respete la configuración de proxy del
+  sistema**: apps que gestionan su propia conexión de red por fuera de esa
+  configuración simplemente no pasan por acá (ver "Alcance del filtrado por
+  proxy del sistema" más abajo).
+- **La reputación de IP vía AbuseIPDB es fail-open ante fallas**: si la API
+  no responde (o está en cooldown por el circuit breaker, ver más abajo),
+  esa capa específica de filtrado queda temporalmente inactiva; las demás
+  (blocklist de dominios, IPs de C2, TOR) siguen funcionando igual. Ver
+  [ADR 0002](docs/adr/0002-abuseipdb-fail-open-circuit-breaker.md).
+- **Pensado para una sola máquina**, no para ser un gateway de red para
+  varios dispositivos.
+- **No reemplaza un antivirus ni una VPN**: es una capa de filtrado de
+  destinos de red, complementaria a esas otras capas, no un sustituto.
 
 ## Estructura del proyecto
 
@@ -88,7 +120,7 @@ secure-proxy/
 ### Linux / macOS
 
 ```bash
-git clone https://github.com/<usuario>/secure-proxy.git
+git clone https://github.com/matiaselebi/secure-proxy.git
 cd secure-proxy
 python3 -m venv venv
 source venv/bin/activate
@@ -99,7 +131,7 @@ cp .env.example .env   # completar ABUSEIPDB_API_KEY (opcional; Telegram viene d
 ### Windows
 
 ```powershell
-git clone https://github.com/<usuario>/secure-proxy.git
+git clone https://github.com/matiaselebi/secure-proxy.git
 cd secure-proxy
 python -m venv venv
 venv\Scripts\activate
@@ -275,10 +307,35 @@ intervalo.
   a diferencia del cache en memoria).
 - `filtering.check_tor_exit_nodes`: si bloquea salidas hacia nodos TOR
   conocidos.
+- `filtering.mode`: `"enforce"` (default, bloquea de verdad) o `"audit"`
+  (evalúa y registra qué se hubiera bloqueado, pero deja pasar todo el
+  tráfico - pensado para probar una lista o umbral nuevo sin riesgo antes
+  de aplicarlo en serio; ver [ADR 0003](docs/adr/0003-audit-mode.md)).
 - `firewall.enabled`: si además de loguear, ejecuta reglas de firewall reales
   (por defecto `false` - modo dry-run, solo genera el comando).
 - `telegram.enabled`: si envía alertas por Telegram (opcional, desactivado
   por defecto).
+
+## Resiliencia ante fallas de AbuseIPDB (circuit breaker)
+
+Si la consulta a AbuseIPDB falla 3 veces seguidas (`AbuseIPDBClient.
+FAILURE_THRESHOLD`), el cliente deja de intentar la llamada de red durante
+60 segundos (`RESET_TIMEOUT_SECONDS`) y devuelve score 0 de inmediato en
+ese período, en vez de pagar el timeout completo (5s) en cada conexión
+nueva mientras el servicio está caído. Pasado ese tiempo, la próxima
+consulta se intenta de nuevo con normalidad; si funciona, el circuito se
+cierra solo. Detalle y justificación en
+[ADR 0002](docs/adr/0002-abuseipdb-fail-open-circuit-breaker.md).
+
+## Validación de dominios en el dashboard
+
+Los formularios de "Lista blanca" y "Lista negra" del dashboard (y las
+opciones equivalentes del menú .bat) validan que el texto ingresado tenga
+forma de dominio o IP antes de escribirlo en el archivo de lista
+correspondiente (`src/secureproxy/validation.py`). Esto evita que una URL
+completa pegada por error ("http://ejemplo.com/ruta") termine guardada tal
+cual en `data/allowlist.txt` o `data/blocklist.txt`, donde no matchearía
+nunca contra un hostname real.
 
 ## Tests
 
@@ -287,10 +344,12 @@ pytest tests/ -v
 ```
 
 Cobertura actual: motor de filtrado (blocklist, allowlist, AbuseIPDB, nodos
-TOR, Feodo Tracker), cache persistente de reputación de IPs, logging en
-SQLite, integración end-to-end del servidor proxy (tráfico permitido,
-bloqueado, y el flujo completo de "Permitir" desde el dashboard), y parseo
-de los feeds de amenazas.
+TOR, Feodo Tracker, modo audit), circuit breaker de AbuseIPDB (apertura,
+cierre, y que un fallo aislado no lo dispara), validación de formato de
+dominio, cache persistente de reputación de IPs, logging en SQLite,
+integración end-to-end del servidor proxy (tráfico permitido, bloqueado, el
+flujo completo de "Permitir" desde el dashboard, y el rechazo de dominios
+mal formados), y parseo de los feeds de amenazas.
 
 ## Docker
 
@@ -298,6 +357,18 @@ de los feeds de amenazas.
 docker build -t secure-proxy -f docker/Dockerfile .
 docker run -p 8888:8888 --env-file .env secure-proxy
 ```
+
+## Decisiones de diseño (ADRs)
+
+Las decisiones de arquitectura no triviales (por qué no se hace inspección
+TLS, por qué AbuseIPDB es fail-open con circuit breaker, por qué existe un
+modo audit) están documentadas en `docs/adr/`, con su contexto y las
+consecuencias aceptadas de cada una - para que quede registro del "por qué"
+además del "qué".
+
+Las dependencias (`requirements.txt` y las Actions del CI) se mantienen
+actualizadas automáticamente vía Dependabot (`.github/dependabot.yml`,
+chequeo semanal).
 
 ## Roadmap
 
@@ -314,7 +385,7 @@ contenedores), una solución antivirus, y buenas prácticas de navegación.
 
 ## Autor
 
-Matias Yamil Elebi - [LinkedIn](#) · [GitHub](#)
+Matias Elebi - [LinkedIn](https://linkedin.com/in/matiaselebi/) · [GitHub](https://github.com/matiaselebi)
 
 ## Licencia
 

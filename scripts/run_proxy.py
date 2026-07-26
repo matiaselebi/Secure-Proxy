@@ -94,6 +94,7 @@ def main() -> None:
         allowlist=allowlist,
         abuseipdb_min_score=cfg.filtering.abuseipdb_min_score,
         check_tor_exit_nodes=cfg.filtering.check_tor_exit_nodes,
+        mode=cfg.filtering.mode,
     )
 
     logger_db = LoggerDB(str(cfg.resolve_path(cfg.logging.db_path)))
@@ -108,6 +109,10 @@ def main() -> None:
     PID_FILE.write_text(str(os.getpid()))
 
     print(f"[SecureProxy] escuchando en {cfg.proxy.host}:{cfg.proxy.port}")
+    if cfg.filtering.mode == "audit":
+        print("[SecureProxy] modo: AUDIT (registra qué bloquearía, pero deja pasar todo el tráfico)")
+    else:
+        print("[SecureProxy] modo: enforce (bloquea de verdad)")
     print(f"[SecureProxy] blocklist: {cfg.resolve_path(cfg.filtering.blocklist_path)}")
     print(f"[SecureProxy] logs: {cfg.resolve_path(cfg.logging.db_path)}")
     print(f"[SecureProxy] PID: {os.getpid()} (guardado en {PID_FILE})")

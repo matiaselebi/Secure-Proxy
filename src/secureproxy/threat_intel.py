@@ -131,19 +131,53 @@ class IPBlocklist:
 
 class AbuseIPDBClient:
     """Cliente con cache en memoria (y opcionalmente persistente en disco)
-    para la API de AbuseIPDB."""
+    para la API de AbuseIPDB.
+
+    Incluye un circuit breaker simple: si la API falla varias veces
+    seguidas (caída, rate-limit, etc.), en vez de seguir intentando y
+    pagando el timeout completo (5s) en cada request que pasa por el
+    proxy, el cliente "abre el circuito" y devuelve 0 (fail-open) de
+    inmediato durante un tiempo de enfriamiento, sin siquiera intentar la
+    llamada de red. Pasado ese tiempo, deja pasar UNA consulta de prueba;
+    si funciona, cierra el circuito y vuelve a la normalidad."""
 
     API_URL = "https://api.abuseipdb.com/api/v2/check"
+
+    # Cuántos fallos consecutivos abren el circuito.
+    FAILURE_THRESHOLD = 3
+    # Cuánto tiempo (segundos) se mantiene abierto antes de probar de nuevo.
+    RESET_TIMEOUT_SECONDS = 60
 
     def __init__(self, api_key: str, cache_ttl: int = 3600, persistent_cache=None):
         self.api_key = api_key
         self.cache_ttl = cache_ttl
         self.persistent_cache = persistent_cache  # PersistentIPCache | None
         self._cache: dict[str, tuple[int, float]] = {}  # ip -> (score, ts)
+        self._consecutive_failures = 0
+        self._circuit_opened_at: float | None = None
+
+    @property
+    def circuit_open(self) -> bool:
+        """True si el circuito está abierto (dejando pasar solo consultas
+        de prueba cada RESET_TIMEOUT_SECONDS) en este momento."""
+        if self._circuit_opened_at is None:
+            return False
+        return (time.time() - self._circuit_opened_at) < self.RESET_TIMEOUT_SECONDS
+
+    def _record_success(self) -> None:
+        self._consecutive_failures = 0
+        self._circuit_opened_at = None
+
+    def _record_failure(self) -> None:
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self.FAILURE_THRESHOLD:
+            self._circuit_opened_at = time.time()
 
     def get_abuse_score(self, ip: str) -> int:
         """Devuelve el abuseConfidenceScore (0-100) para una IP. 0 si no hay API key
-        configurada o si la consulta falla (fail-open a nivel de reputación, no de red)."""
+        configurada, si el circuito está abierto, o si la consulta falla
+        (fail-open a nivel de reputación, no de red: un problema con
+        AbuseIPDB no debe tumbar el proxy ni bloquear tráfico legítimo)."""
         if not self.api_key:
             return 0
 
@@ -160,6 +194,11 @@ class AbuseIPDBClient:
                 self._cache[ip] = (persisted_score, time.time())
                 return persisted_score
 
+        if self.circuit_open:
+            # No perdemos 5 segundos de timeout por request si ya sabemos
+            # que la API viene fallando: cortamos acá mismo.
+            return 0
+
         try:
             response = requests.get(
                 self.API_URL,
@@ -169,8 +208,10 @@ class AbuseIPDBClient:
             )
             response.raise_for_status()
             score = response.json()["data"]["abuseConfidenceScore"]
+            self._record_success()
         except (requests.RequestException, KeyError, ValueError):
             score = 0
+            self._record_failure()
 
         self._cache[ip] = (score, time.time())
         if self.persistent_cache is not None:
@@ -179,7 +220,8 @@ class AbuseIPDBClient:
 
     def clear_cache(self) -> None:
         """Borra el cache en memoria y, si hay uno configurado, también el
-        persistente. Pensado para el botón "Borrar cache" del dashboard."""
+        persistente. Pensado para el botón "Borrar cache" del dashboard.
+        No afecta el estado del circuit breaker."""
         self._cache.clear()
         if self.persistent_cache is not None:
             self.persistent_cache.clear()

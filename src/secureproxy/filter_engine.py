@@ -18,6 +18,20 @@ class FilterDecision:
     blocked: bool
     reason: str = ""
     resolved_ip: str | None = None
+    # True cuando el modo "audit" evitó que un bloqueo real se aplicara: la
+    # conexión se dejó pasar igual, pero queda constancia de qué hubiera
+    # pasado en modo "enforce". Ver FilterEngine.mode.
+    would_have_blocked: bool = False
+
+
+# Modos de operación del motor de filtrado:
+#   "enforce" (default): aplica los bloqueos normalmente.
+#   "audit": evalúa y registra qué se HUBIERA bloqueado, pero deja pasar
+#            todo el tráfico. Pensado para probar reglas nuevas (una lista
+#            negra recién agregada, un umbral de AbuseIPDB distinto) sin
+#            riesgo de cortar algo legítimo mientras se observa el efecto
+#            real en el dashboard/logs.
+VALID_MODES = ("enforce", "audit")
 
 
 class FilterEngine:
@@ -30,7 +44,10 @@ class FilterEngine:
         allowlist: Allowlist | None = None,
         abuseipdb_min_score: int = 50,
         check_tor_exit_nodes: bool = True,
+        mode: str = "enforce",
     ):
+        if mode not in VALID_MODES:
+            raise ValueError(f"mode inválido: {mode!r} (válidos: {VALID_MODES})")
         self.blocklist = blocklist
         self.abuseipdb_client = abuseipdb_client
         self.tor_list = tor_list
@@ -38,6 +55,7 @@ class FilterEngine:
         self.allowlist = allowlist
         self.abuseipdb_min_score = abuseipdb_min_score
         self.check_tor_exit_nodes = check_tor_exit_nodes
+        self.mode = mode
 
     def evaluate(self, host: str) -> FilterDecision:
         """Decide si una conexión hacia `host` debe bloquearse.
@@ -46,7 +64,23 @@ class FilterEngine:
         demás), después blocklist local por dominio, lista de IPs de C2
         conocidas (Feodo Tracker), nodos TOR, y por último reputación de IP
         vía AbuseIPDB.
+
+        En modo "audit", cualquier decisión que hubiera bloqueado se
+        devuelve con blocked=False y would_have_blocked=True: la conexión
+        pasa igual, pero la razón queda registrada tal cual se hubiera
+        aplicado.
         """
+        decision = self._evaluate_enforce(host)
+        if self.mode == "audit" and decision.blocked:
+            return FilterDecision(
+                blocked=False,
+                reason=f"[AUDIT] hubiera bloqueado: {decision.reason}",
+                resolved_ip=decision.resolved_ip,
+                would_have_blocked=True,
+            )
+        return decision
+
+    def _evaluate_enforce(self, host: str) -> FilterDecision:
         if self.allowlist is not None and self.allowlist.is_allowed(host):
             return FilterDecision(blocked=False, reason="dominio en allowlist")
 

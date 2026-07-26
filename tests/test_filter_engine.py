@@ -122,3 +122,37 @@ def test_blocks_feodotracker_c2_ip(tmp_path, monkeypatch):
 
     assert decision.blocked is True
     assert "Feodo Tracker" in decision.reason
+
+
+def test_audit_mode_does_not_block_but_flags_would_have_blocked(tmp_path):
+    blocklist = make_blocklist(tmp_path, ["malicious-example.com"])
+    engine = FilterEngine(
+        blocklist, FakeAbuseIPDBClient(), FakeTorExitNodeList(), mode="audit"
+    )
+
+    decision = engine.evaluate("malicious-example.com")
+
+    assert decision.blocked is False
+    assert decision.would_have_blocked is True
+    assert "AUDIT" in decision.reason
+    assert "malicious-example.com" in decision.reason
+
+
+def test_audit_mode_leaves_clean_domains_unaffected(tmp_path, monkeypatch):
+    blocklist = make_blocklist(tmp_path, [])
+    engine = FilterEngine(blocklist, FakeAbuseIPDBClient(), FakeTorExitNodeList(), mode="audit")
+    monkeypatch.setattr(
+        "secureproxy.filter_engine.resolve_host_to_ip", lambda host: "1.2.3.4"
+    )
+
+    decision = engine.evaluate("clean-example.com")
+
+    assert decision.blocked is False
+    assert decision.would_have_blocked is False
+
+
+def test_invalid_mode_raises():
+    import pytest
+
+    with pytest.raises(ValueError):
+        FilterEngine(None, None, None, mode="not-a-real-mode")

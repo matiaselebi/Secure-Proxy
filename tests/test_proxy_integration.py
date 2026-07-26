@@ -7,6 +7,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 import requests
@@ -255,3 +256,20 @@ def test_stalled_client_does_not_hang_forever(proxy_server):
 
     assert data == b""  # el servidor cerró la conexión por inactividad
     assert elapsed < 3  # se cortó rápido, no se quedó colgado
+
+
+def test_blockdomain_endpoint_rejects_malformed_input(proxy_server):
+    """Un valor pegado por error (URL completa, con espacios, etc.) no debe
+    terminar escrito en el archivo de blocklist."""
+    proxy_port = proxy_server.server_address[1]
+    blocklist = proxy_server.RequestHandlerClass.filter_engine.blocklist
+
+    response = requests.get(
+        f"http://127.0.0.1:{proxy_port}/blockdomain?domain=" + quote("http://not-a-domain.com/x"),
+        timeout=5,
+        allow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert blocklist.is_blocked("not-a-domain.com") is False
+    assert "not-a-domain.com" not in blocklist.manual_entries()

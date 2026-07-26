@@ -20,6 +20,7 @@ from .firewall_rules import FirewallManager
 from .logger_db import LoggerDB
 from .notifier import TelegramNotifier
 from .threat_intel import Allowlist
+from .validation import is_valid_domain
 
 BUFFER_SIZE = 8192
 
@@ -41,7 +42,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     # camino (pestaña cerrada de golpe, red que se corta) deja el hilo
     # esperando para siempre. No aplica al túnel CONNECT ya establecido: ese
     # tiene su propia lógica de inactividad en _relay (ver do_CONNECT).
-    timeout = 5
+    timeout = 30
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002
         # Silenciamos el logging default a stderr; ya logueamos nosotros a SQLite.
@@ -75,7 +76,9 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200, "Connection Established")
         self.end_headers()
         self.logger_db.log_request(
-            self.client_address[0], "CONNECT", host, port, "-", False, duration_ms=duration_ms,
+            self.client_address[0], "CONNECT", host, port, "-", False,
+            reason=decision.reason if decision.would_have_blocked else "",
+            duration_ms=duration_ms,
         )
 
         # A partir de acá el socket pasa a ser un túnel de bytes crudos (TLS),
@@ -184,7 +187,9 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
         self.logger_db.log_request(
-            self.client_address[0], method, host, port, parsed.path, False, duration_ms=duration_ms,
+            self.client_address[0], method, host, port, parsed.path, False,
+            reason=decision.reason if decision.would_have_blocked else "",
+            duration_ms=duration_ms,
         )
 
     def do_GET(self) -> None:  # noqa: N802
@@ -243,12 +248,19 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     def _handle_list_edit(self, target_list, query_string: str, add: bool) -> None:
         """Endpoint común para agregar/quitar un dominio de una lista
         (allowlist o blocklist manual). Pensado para uso local únicamente
-        (no valida quién llama, ya que el dashboard solo escucha en loopback)."""
+        (no valida quién llama, ya que el dashboard solo escucha en loopback).
+
+        Al agregar, valida que el texto tenga forma de dominio (no una URL
+        completa, no una cadena vacía o con espacios) antes de escribirlo en
+        el archivo de lista - evita ensuciar la lista con "http://x.com" o
+        similares pegados por error desde el navegador. Al quitar no hace
+        falta validar: si no matchea nada, remove_and_reload no hace nada."""
         params = parse_qs(query_string)
         domain = (params.get("domain") or [""])[0].strip()
         if domain:
             if add:
-                target_list.add_and_reload(domain)
+                if is_valid_domain(domain):
+                    target_list.add_and_reload(domain)
             else:
                 target_list.remove_and_reload(domain)
         self._redirect_to_dashboard()
