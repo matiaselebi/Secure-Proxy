@@ -1,0 +1,56 @@
+# Pools de minería de criptomonedas conocidos.
+#
+# Por qué esta lista existe aparte de la blocklist general: el escenario que
+# cubre es el cryptojacking, o sea que algo se instaló en la PC y la pone a
+# minar para otro. Cuando un bloqueo salta por acá, la reacción NO es agregar
+# una excepción: es buscar qué proceso se estaba conectando.
+#
+# Los mineros usan el protocolo stratum contra un pool. Bloqueando los pools
+# más usados, el minero queda sin donde reportar y no sirve para nada.
+#
+# Se bloquean también los subdominios (asi que "nanopool.org" cubre
+# "eth-eu1.nanopool.org" y cualquier otro).
+#
+# Si usás algún pool a propósito, sacalo de acá o agregalo a la lista blanca.
+
+nanopool.org
+ethermine.org
+f2pool.com
+poolin.com
+antpool.com
+viabtc.com
+btc.com
+slushpool.com
+braiins.com
+2miners.com
+hiveon.net
+flexpool.io
+herominers.com
+k1pool.com
+woolypooly.com
+minexmr.com
+supportxmr.com
+moneroocean.stream
+xmrpool.eu
+nicehash.com
+prohashing.com
+zergpool.com
+zpool.ca
+unmineable.com
+mining-dutch.nl
+solopool.org
+coinotron.com
+dxpool.com
+emcd.io
+luxor.tech
+kryptex.com
+crazypool.org
+skypool.org
+minerstat.com
+coin-miners.info
+webminepool.com
+coinhive.com
+coinimp.com
+crypto-loot.org
+webmine.cz
+cryptoloot.pro

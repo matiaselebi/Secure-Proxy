@@ -10,6 +10,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from secureproxy import http_client  # noqa: E402
 from secureproxy.threat_intel import AbuseIPDBClient  # noqa: E402
 
 
@@ -26,7 +27,7 @@ class _FailingSession:
 
 def test_circuit_opens_after_threshold_consecutive_failures(monkeypatch):
     failing_get = _FailingSession()
-    monkeypatch.setattr(requests, "get", failing_get)
+    monkeypatch.setattr(http_client, "get", failing_get)
     client = AbuseIPDBClient(api_key="fake-key", cache_ttl=0)
 
     for _ in range(AbuseIPDBClient.FAILURE_THRESHOLD):
@@ -37,7 +38,7 @@ def test_circuit_opens_after_threshold_consecutive_failures(monkeypatch):
 
 def test_circuit_open_skips_network_call_entirely(monkeypatch):
     failing_get = _FailingSession()
-    monkeypatch.setattr(requests, "get", failing_get)
+    monkeypatch.setattr(http_client, "get", failing_get)
     client = AbuseIPDBClient(api_key="fake-key", cache_ttl=0)
 
     for _ in range(AbuseIPDBClient.FAILURE_THRESHOLD):
@@ -53,7 +54,7 @@ def test_circuit_open_skips_network_call_entirely(monkeypatch):
 
 def test_circuit_closes_after_reset_timeout_and_successful_probe(monkeypatch):
     failing_get = _FailingSession()
-    monkeypatch.setattr(requests, "get", failing_get)
+    monkeypatch.setattr(http_client, "get", failing_get)
     client = AbuseIPDBClient(api_key="fake-key", cache_ttl=0)
 
     for _ in range(AbuseIPDBClient.FAILURE_THRESHOLD):
@@ -72,7 +73,7 @@ def test_circuit_closes_after_reset_timeout_and_successful_probe(monkeypatch):
         def json(self):
             return {"data": {"abuseConfidenceScore": 17}}
 
-    monkeypatch.setattr(requests, "get", lambda *a, **k: _OkResponse())
+    monkeypatch.setattr(http_client, "get", lambda *a, **k: _OkResponse())
 
     score = client.get_abuse_score("8.8.8.8")
 
@@ -85,7 +86,7 @@ def test_single_transient_failure_does_not_open_circuit(monkeypatch):
     """Un fallo aislado no debe activar el circuit breaker: solo una racha
     de FAILURE_THRESHOLD fallos consecutivos lo abre."""
     failing_get = _FailingSession()
-    monkeypatch.setattr(requests, "get", failing_get)
+    monkeypatch.setattr(http_client, "get", failing_get)
     client = AbuseIPDBClient(api_key="fake-key", cache_ttl=0)
 
     assert AbuseIPDBClient.FAILURE_THRESHOLD > 1

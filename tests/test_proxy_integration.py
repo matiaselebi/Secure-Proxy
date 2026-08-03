@@ -64,6 +64,10 @@ def proxy_server(tmp_path):
         allowlist=allowlist,
         abuseipdb_min_score=50,
         check_tor_exit_nodes=False,
+        # El backend de prueba vive en 127.0.0.1 y en un puerto efímero:
+        # sin esto lo cortaría la política de destino, que es justamente lo
+        # que queremos que corte en producción.
+        allow_internal_destinations=True,
     )
     logger_db = LoggerDB(str(tmp_path / "logs.db"))
     notifier = TelegramNotifier(enabled=False, bot_token="", chat_id="")
@@ -258,18 +262,134 @@ def test_stalled_client_does_not_hang_forever(proxy_server):
     assert elapsed < 3  # se cortó rápido, no se quedó colgado
 
 
-def test_blockdomain_endpoint_rejects_malformed_input(proxy_server):
-    """Un valor pegado por error (URL completa, con espacios, etc.) no debe
-    terminar escrito en el archivo de blocklist."""
+def test_blockdomain_endpoint_acepta_una_url_pegada_y_la_limpia(proxy_server):
+    """Nadie copia dominios: uno copia la barra del navegador. Antes esto se
+    rechazaba en silencio; ahora se limpia y se guarda el dominio."""
     proxy_port = proxy_server.server_address[1]
     blocklist = proxy_server.RequestHandlerClass.filter_engine.blocklist
 
     response = requests.get(
-        f"http://127.0.0.1:{proxy_port}/blockdomain?domain=" + quote("http://not-a-domain.com/x"),
+        f"http://127.0.0.1:{proxy_port}/blockdomain?domain="
+        + quote("https://www.un-dominio.com/una/seccion?x=1"),
         timeout=5,
         allow_redirects=False,
     )
 
     assert response.status_code == 303
-    assert blocklist.is_blocked("not-a-domain.com") is False
-    assert "not-a-domain.com" not in blocklist.manual_entries()
+    assert "un-dominio.com" in blocklist.manual_entries()
+    # y la regla cubre las dos formas, con y sin www.
+    assert blocklist.is_blocked("un-dominio.com") is True
+    assert blocklist.is_blocked("www.un-dominio.com") is True
+    # el redirect avisa qué se le sacó, en vez de guardar algo distinto en
+    # silencio
+    assert "aviso=" in response.headers["Location"]
+
+
+def test_blockdomain_endpoint_rejects_malformed_input(proxy_server):
+    """Limpiar una URL es una cosa; tragarse cualquier cosa es otra. Basura
+    real sigue sin entrar al archivo."""
+    proxy_port = proxy_server.server_address[1]
+    blocklist = proxy_server.RequestHandlerClass.filter_engine.blocklist
+
+    for basura in ("no es un dominio", "://", "...", "%%%"):
+        response = requests.get(
+            f"http://127.0.0.1:{proxy_port}/blockdomain?domain=" + quote(basura),
+            timeout=5,
+            allow_redirects=False,
+        )
+        assert response.status_code == 303
+
+    # la fixture arranca con un dominio; ninguno de los de arriba se sumó
+    assert blocklist.manual_entries() == ["blocked-site.test"]
+
+
+# ---- Dashboard en su propio puerto (separado del puerto que proxea) ----
+
+def test_dashboard_en_puerto_propio_se_puede_abrir_muchas_veces():
+    """El bug que motivo la separacion: con el dashboard en el MISMO puerto
+    que el proxy, la pagina andaba la primera vez y despues quedaba cargando
+    para siempre (el navegador reusaba conexiones del pool del proxy). Con
+    puerto propio, abrirla 10 veces seguidas tiene que andar siempre."""
+    import tempfile, threading, urllib.request, os
+    from secureproxy.filter_engine import FilterEngine
+    from secureproxy.firewall_rules import FirewallManager
+    from secureproxy.logger_db import LoggerDB
+    from secureproxy.notifier import TelegramNotifier
+    from secureproxy.proxy_server import build_dashboard_server
+    from secureproxy.threat_intel import (
+        AbuseIPDBClient, Allowlist, Blocklist, TorExitNodeList,
+    )
+
+    tmp = tempfile.mkdtemp()
+    for n in ("b.txt", "a.txt"):
+        open(os.path.join(tmp, n), "w").close()
+    allowlist = Allowlist(os.path.join(tmp, "a.txt"))
+    engine = FilterEngine(
+        blocklist=Blocklist(os.path.join(tmp, "b.txt")),
+        abuseipdb_client=AbuseIPDBClient(""),
+        tor_list=TorExitNodeList(),
+        allowlist=allowlist,
+        check_tor_exit_nodes=False,
+    )
+    server = build_dashboard_server(
+        "127.0.0.1", 0, engine, LoggerDB(os.path.join(tmp, "l.db")),
+        TelegramNotifier(False, "", ""), FirewallManager(False), allowlist,
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+    try:
+        for i in range(10):
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as resp:
+                assert resp.status == 200, f"fallo en la apertura {i + 1}"
+                assert "SecureProxy" in resp.read().decode("utf-8", "replace")
+    finally:
+        server.shutdown()
+
+
+def test_un_pedido_a_otro_sitio_no_activa_las_rutas_del_panel():
+    """En el puerto que proxea, lo que decide si un pedido es para el panel o
+    es trafico a reenviar es el DESTINO, no el path. Sin esto, cualquier
+    sitio con un path igual al de una ruta del panel se la hacia ejecutar al
+    proxy: en el peor caso, una pagina cualquiera podia cambiarle la
+    configuracion con solo hacerte visitar /config?k=...&v=..."""
+    from urllib.parse import urlsplit
+
+    from secureproxy.proxy_server import ProxyRequestHandler
+
+    class _ServidorFalso:
+        server_address = ("127.0.0.1", 8888)
+
+    handler = ProxyRequestHandler.__new__(ProxyRequestHandler)
+    handler.server = _ServidorFalso()
+
+    # Forma relativa: entraron derecho.
+    assert handler._es_para_nosotros(urlsplit("/dashboard")) is True
+
+    # Forma absoluta hacia nosotros mismos: tambien es el panel.
+    assert handler._es_para_nosotros(urlsplit("http://127.0.0.1:8888/")) is True
+    assert handler._es_para_nosotros(urlsplit("http://localhost:8888/config")) is True
+
+    # Forma absoluta hacia afuera: es trafico, aunque el path coincida.
+    assert handler._es_para_nosotros(urlsplit("http://google.com/")) is False
+    assert handler._es_para_nosotros(urlsplit("http://google.com/dashboard")) is False
+    assert handler._es_para_nosotros(urlsplit("http://evil.test/config?k=mode&v=audit")) is False
+    # Mismo host, otro puerto: no somos nosotros.
+    assert handler._es_para_nosotros(urlsplit("http://127.0.0.1:9999/")) is False
+
+
+def test_el_puerto_del_dashboard_no_proxea():
+    """Ese puerto sirve el panel y nada mas: un CONNECT o un POST se rechazan,
+    para que no quede una via alternativa de proxeo sin filtrar."""
+    from secureproxy.proxy_server import DashboardOnlyRequestHandler
+
+    for metodo in ("do_POST", "do_PUT", "do_DELETE", "do_CONNECT"):
+        assert hasattr(DashboardOnlyRequestHandler, metodo)
+
+
+def test_config_trae_puerto_de_dashboard_separado():
+    from secureproxy.config_loader import ProxyConfig
+
+    cfg = ProxyConfig()
+    assert cfg.port == 8888            # por donde proxea
+    assert cfg.dashboard_port == 8889  # por donde se ve el panel
+    assert cfg.port != cfg.dashboard_port

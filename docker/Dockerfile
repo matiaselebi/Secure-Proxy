@@ -11,5 +11,6 @@ COPY config/ config/
 COPY data/ data/
 
 EXPOSE 8888
+EXPOSE 8889
 
 CMD ["python", "scripts/run_proxy.py"]

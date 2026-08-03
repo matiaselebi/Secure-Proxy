@@ -18,7 +18,7 @@ set PYTHON=%~dp0venv\Scripts\python.exe
 set RUN_SCRIPT=%~dp0scripts\run_proxy.py
 set PROXY_ADDR=127.0.0.1
 set PROXY_PORT=8888
-set DASHBOARD_URL=http://127.0.0.1:8888/dashboard
+set DASHBOARD_URL=http://127.0.0.1:8889/
 set REG_KEY=HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings
 
 if not exist "%PYTHON%" (
@@ -44,13 +44,14 @@ echo.
 echo  1. Iniciar proxy  (ahora y en cada inicio de Windows)
 echo  2. Detener proxy  (y desactivar el inicio automatico)
 echo  3. Ver estado
-echo  4. Actualizar listas de amenazas (URLhaus + OpenPhish + Feodo Tracker)
+echo  4. Actualizar listas de amenazas (URLhaus + OpenPhish + Feodo + FireHOL)
 echo  5. Agregar dominio a la lista blanca (permitir siempre)
 echo  6. Agregar dominio a la lista negra (bloquear siempre)
 echo  7. Borrar cache de reputacion de IPs (AbuseIPDB)
-echo  8. Salir
+echo  8. Actualizar base de pais y proveedor por IP (una vez por mes)
+echo  9. Salir
 echo.
-set /p opcion="Elegi una opcion (1-8): "
+set /p opcion="Elegi una opcion (1-9): "
 
 if "%opcion%"=="1" goto iniciar
 if "%opcion%"=="2" goto detener
@@ -59,7 +60,8 @@ if "%opcion%"=="4" goto actualizar
 if "%opcion%"=="5" goto permitir
 if "%opcion%"=="6" goto bloquear
 if "%opcion%"=="7" goto borrar_cache
-if "%opcion%"=="8" goto salir
+if "%opcion%"=="8" goto actualizar_geoip
+if "%opcion%"=="9" goto salir
 goto menu
 
 :iniciar
@@ -161,15 +163,30 @@ echo.
 pause
 goto menu
 
+:actualizar_geoip
+echo.
+echo Esto baja la base de pais / ASN / proveedor por IP (DB-IP lite, gratuita)
+echo y la arma en data\geoip.db. Son varios megabytes y tarda un rato, pero
+echo con hacerlo una vez por mes alcanza: las asignaciones de red no cambian
+echo todos los dias.
+echo.
+echo El proxy funciona igual sin esta base; lo unico que pasa es que el
+echo historial queda sin las columnas de pais, ASN y proveedor.
+echo.
+"%PYTHON%" scripts\update_geoip.py
+echo.
+pause
+goto menu
+
 :permitir
 echo.
-set /p NUEVO_DOMINIO="Dominio a permitir siempre (ej: ejemplo.com): "
+set /p NUEVO_DOMINIO="Dominio a permitir siempre (podes pegar la URL entera): "
 if "%NUEVO_DOMINIO%"=="" (
     echo No ingresaste ningun dominio.
     pause
     goto menu
 )
-"%PYTHON%" -c "import sys; sys.path.insert(0, 'src'); from secureproxy.threat_intel import Allowlist; Allowlist('data/allowlist.txt').add_and_reload('%NUEVO_DOMINIO%'); print('Agregado a la lista blanca:', '%NUEVO_DOMINIO%')"
+"%PYTHON%" scripts\agregar_dominio.py blanca "%NUEVO_DOMINIO%"
 echo.
 echo Si el proxy esta corriendo, el cambio se aplica solo en unos segundos
 echo (recarga automatica en segundo plano), sin necesidad de reiniciarlo.
@@ -180,13 +197,13 @@ goto menu
 
 :bloquear
 echo.
-set /p NUEVO_DOMINIO="Dominio a bloquear siempre (ej: ejemplo.com): "
+set /p NUEVO_DOMINIO="Dominio a bloquear siempre (podes pegar la URL entera): "
 if "%NUEVO_DOMINIO%"=="" (
     echo No ingresaste ningun dominio.
     pause
     goto menu
 )
-"%PYTHON%" -c "import sys; sys.path.insert(0, 'src'); from secureproxy.threat_intel import Blocklist; Blocklist('data/blocklist.txt').add_and_reload('%NUEVO_DOMINIO%'); print('Agregado a la lista negra manual:', '%NUEVO_DOMINIO%')"
+"%PYTHON%" scripts\agregar_dominio.py negra "%NUEVO_DOMINIO%"
 echo.
 echo Si el proxy esta corriendo, el cambio se aplica solo en unos segundos
 echo (recarga automatica en segundo plano), sin necesidad de reiniciarlo.
@@ -206,7 +223,7 @@ if /i not "%CONFIRMA%"=="s" (
 )
 echo.
 echo Intentando borrarlo en caliente (proxy corriendo)...
-powershell -NoProfile -Command "try { Invoke-WebRequest -Uri '%DASHBOARD_URL:dashboard=clear-cache%' -UseBasicParsing -TimeoutSec 3 | Out-Null; Write-Host '  OK: cache borrado.' } catch { Write-Host '  El proxy no parece estar corriendo, no se pudo borrar en caliente.'; exit 1 }"
+powershell -NoProfile -Command "[System.Net.WebRequest]::DefaultWebProxy = $null; try { Invoke-WebRequest -Uri '%DASHBOARD_URL%clear-cache' -UseBasicParsing -TimeoutSec 3 | Out-Null; Write-Host '  OK: cache borrado.' } catch { Write-Host '  El proxy no parece estar corriendo, no se pudo borrar en caliente.'; exit 1 }"
 if %errorlevel% neq 0 (
     echo.
     echo Inicia el proxy primero (opcion 1) si queres borrar el cache al

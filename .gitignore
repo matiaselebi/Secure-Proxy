@@ -6,9 +6,11 @@ venv/
 data/*.db
 data/proxy.pid
 data/blocklist_feeds.txt
+data/ip_blocklist_feeds.txt
+data/ip_ranges_feeds.txt
+data/feeds_status.json
 data/tor_exit_nodes_cache.txt
 .pytest_cache/
 *.egg-info/
 .vscode/
 .idea/
-data/proxy_logs.db-journal

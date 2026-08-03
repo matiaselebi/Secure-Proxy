@@ -1,4 +1,5 @@
 import os
+import pytest
 import sys
 import time
 from pathlib import Path
@@ -16,6 +17,13 @@ class FakeResponse:
         pass
 
 
+@pytest.fixture(autouse=True)
+def _no_ensuciar_data(monkeypatch, tmp_path):
+    """Las descargas anotan su estado en data/feeds_status.json. En los tests
+    eso tiene que ir a una carpeta temporal, no a la data/ del proyecto."""
+    monkeypatch.setattr(update_blocklist, "DATA_DIR", tmp_path)
+
+
 def test_fetch_urlhaus_domains_parses_hostfile(monkeypatch):
     fake_text = "\n".join(
         [
@@ -26,7 +34,7 @@ def test_fetch_urlhaus_domains_parses_hostfile(monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        update_blocklist.requests, "get", lambda *a, **k: FakeResponse(fake_text)
+        update_blocklist.http_client, "get", lambda *a, **k: FakeResponse(fake_text)
     )
 
     domains = update_blocklist.fetch_urlhaus_domains()
@@ -43,7 +51,7 @@ def test_fetch_openphish_domains_extracts_hostname(monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        update_blocklist.requests, "get", lambda *a, **k: FakeResponse(fake_text)
+        update_blocklist.http_client, "get", lambda *a, **k: FakeResponse(fake_text)
     )
 
     domains = update_blocklist.fetch_openphish_domains()
@@ -62,7 +70,7 @@ def test_fetch_feodotracker_ips_parses_list(monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        update_blocklist.requests, "get", lambda *a, **k: FakeResponse(fake_text)
+        update_blocklist.http_client, "get", lambda *a, **k: FakeResponse(fake_text)
     )
 
     ips = update_blocklist.fetch_feodotracker_ips()

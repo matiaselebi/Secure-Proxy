@@ -8,6 +8,7 @@ ya se consultó hace poco.
 
 import sqlite3
 import threading
+from contextlib import closing
 import time
 from pathlib import Path
 
@@ -23,7 +24,7 @@ class PersistentIPCache:
         return sqlite3.connect(self.db_path, check_same_thread=False)
 
     def _init_schema(self) -> None:
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS ip_reputation_cache (
@@ -37,7 +38,7 @@ class PersistentIPCache:
 
     def get(self, ip: str, max_age_seconds: float) -> int | None:
         """Devuelve el score cacheado si existe y no venció, o None."""
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             row = conn.execute(
                 "SELECT score, checked_at FROM ip_reputation_cache WHERE ip = ?", (ip,)
             ).fetchone()
@@ -49,7 +50,7 @@ class PersistentIPCache:
         return score
 
     def set(self, ip: str, score: int) -> None:
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             conn.execute(
                 """
                 INSERT INTO ip_reputation_cache (ip, score, checked_at)
@@ -64,11 +65,11 @@ class PersistentIPCache:
         """Borra todas las entradas cacheadas. Pensado para el botón "Borrar
         cache" del dashboard/menú .bat: la próxima vez que se consulte
         cualquier IP, se le vuelve a preguntar a la API de AbuseIPDB."""
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             conn.execute("DELETE FROM ip_reputation_cache")
             conn.commit()
 
     def count(self) -> int:
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             row = conn.execute("SELECT COUNT(*) FROM ip_reputation_cache").fetchone()
         return row[0] if row else 0

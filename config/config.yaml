@@ -3,6 +3,11 @@ proxy:
   port: 8888
   # Cuántas conexiones simultáneas puede atender el pool de threads.
   max_threads: 50
+  # Puerto del dashboard web, SEPARADO del puerto que proxea. Tenerlos juntos
+  # mezclaba dos protocolos muy distintos en un mismo socket; separados, cada
+  # cosa tiene lo suyo y queda en línea con SecureDNS (8890) y SecureVPN
+  # (8891). Panel: http://127.0.0.1:8889/
+  dashboard_port: 8889
 
 filtering:
   blocklist_path: "data/blocklist.txt"
@@ -20,6 +25,29 @@ filtering:
   abuseipdb_cache_ttl: 3600
   # Archivo SQLite donde se persiste el cache de AbuseIPDB entre reinicios.
   abuseipdb_cache_db_path: "data/ip_reputation_cache.db"
+  # Pools de minería de criptomonedas. Va aparte de la blocklist general para
+  # que el motivo del bloqueo diga "cryptojacking": cuando eso salta, lo que
+  # hay que hacer no es agregar una excepción sino buscar qué proceso se
+  # estaba conectando.
+  mining_pools_path: "data/mining_pools.txt"
+  # Rangos de IP con mala reputación (FireHOL nivel 1). Son CIDR, no IPs
+  # sueltas, así que se buscan por rango y no por igualdad.
+  ip_ranges_feeds_path: "data/ip_ranges_feeds.txt"
+  # Modo lista blanca: TODO dominio que no esté en la lista blanca se bloquea.
+  # En una PC de uso diario rompe absolutamente todo, así que está pensado
+  # para usarse junto con mode "audit" y descubrir qué habría que permitir.
+  block_unknown_domains: false
+  # Permitir que el proxy salga hacia loopback, redes privadas y puertos que
+  # no son web. Apagado a propósito: un proxy web que tuneliza a cualquier
+  # puerto y a cualquier destino es un canal TCP arbitrario, y sirve para
+  # llegar al SSH o al panel de tu router desde una pestaña del navegador.
+  # Ponelo en true solo si querés proxear algo de tu propia red.
+  allow_internal_destinations: false
+  # Atajo que fija varias opciones de golpe. Se cambia desde el dashboard:
+  #   "normal"    -> score 50, TOR sí, enforce
+  #   "estricto"  -> score 25, TOR sí, enforce
+  #   "paranoico" -> score 10, TOR sí, audit + bloquear dominios desconocidos
+  security_level: "normal"
   check_tor_exit_nodes: true
   tor_list_cache_ttl: 21600
   # "enforce" (default): bloquea de verdad las conexiones que matchean una
@@ -30,6 +58,43 @@ filtering:
 
 logging:
   db_path: "data/proxy_logs.db"
+  # Cuántas conexiones se conservan en el historial. Como SecureProxy es el
+  # proxy del sistema, ve todo lo que hace la PC y el archivo crece rápido:
+  # al pasar el tope se van borrando las más viejas. 0 = sin límite (no
+  # recomendado; una base gigante hace que el dashboard tarde en abrir).
+  max_rows: 200000
+  # Base local de país y ASN por IP, para enriquecer cada conexión del
+  # registro. Se genera con "python scripts/update_geoip.py" (una vez por mes
+  # alcanza). Si no está, el proxy funciona igual: esos campos quedan vacíos.
+  geoip_db_path: "data/geoip.db"
+  # Guardar qué programa de la PC abrió cada conexión. Se averigua con el
+  # puerto de origen contra la tabla de sockets del sistema: no sale a la red
+  # y no necesita dependencias. Es lo que convierte un "alguien se conectó a
+  # este pool de minería" en un "fue este ejecutable".
+  identify_process: true
+
+# Lo que se MUESTRA en el panel. Nada de acá cambia qué se bloquea.
+dashboard:
+  # El proxy del sistema ve TODO lo que hace la PC, y buena parte es ruido
+  # previsible: el navegador preguntando si hay internet, Windows chequeando
+  # actualizaciones, cada conexión TLS validando un certificado. Con eso, el
+  # Top 10 de destinos son diez dominios de comprobación y no ves si apareció
+  # algo raro. Esto los saca de la VISTA (historial y estadísticas).
+  #
+  # Siguen guardados y siguen contados: el panel te dice cuántas conexiones
+  # está ocultando, buscar un dominio ignora este filtro a propósito, y el
+  # botón de la pestaña Configuración lo apaga sin reiniciar.
+  hide_noise: true
+  noisy_domains_path: "data/noisy_domains.txt"
+
+# Avisos en el escritorio del sistema. No depende de ningún servicio externo
+# ni de tener una cuenta en ningún lado: es una notificación de Windows.
+alerts:
+  enabled: true
+  # Solo lo que significa algo: IPs de C2, pools de minería, IPs con mala
+  # reputación, nodos TOR. Un dominio de tu lista manual no dispara nada,
+  # porque de eso ya sabés. En "false" avisa de todos los bloqueos.
+  only_severe: true
 
 telegram:
   enabled: false

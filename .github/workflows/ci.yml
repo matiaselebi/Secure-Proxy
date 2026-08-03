@@ -9,17 +9,80 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    # Sin techo, un test que se cuelga deja el job corriendo horas. Los 316
+    # tardan menos de dos minutos, así que diez es holgado y a la vez avisa
+    # rápido si algo se traba.
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Las dos versiones que importan: la de Debian estable y la actual.
+        python-version: ["3.11", "3.12"]
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: pytest tests/ -q
+
+      # Que pasen los tests no garantiza que el proxy ARRANQUE. Un import mal
+      # puesto o un error al leer la configuración no siempre lo agarra un
+      # test unitario, y es justo lo que rompe la instalación de alguien que
+      # clona el repo.
+      - name: Comprobar que arranca, responde y apaga limpio
+        run: |
+          python - <<'EOF'
+          import pathlib
+          p = pathlib.Path('config/config.yaml')
+          t = p.read_text(encoding='utf-8')
+          p.write_text(t.replace('port: 8888', 'port: 18888')
+                        .replace('dashboard_port: 8889', 'dashboard_port: 18889'),
+                       encoding='utf-8')
+          EOF
+          python -u scripts/run_proxy.py &
+          PROXY_PID=$!
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:18889/health > /dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:18889/health || { echo "el panel nunca respondió"; exit 1; }
+          curl -sf -o /dev/null -w "panel: HTTP %{http_code}\n" http://127.0.0.1:18889/
+          # SIGINT es la señal que usa el servicio de systemd, justamente
+          # porque con SIGTERM el apagado deja basura.
+          kill -INT $PROXY_PID
+          wait $PROXY_PID && echo "apagó con código 0"
+          test ! -f data/proxy.pid || { echo "quedó el PID file huérfano"; exit 1; }
+
+          # Y lo mismo, pero apagándolo desde el botón del panel. Los tests
+          # verifican la ruta contra un apagado de mentira; esto verifica que
+          # el proceso de verdad se muera y limpie igual que con Ctrl+C.
+          python -u scripts/run_proxy.py &
+          PROXY_PID=$!
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:18889/health > /dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:18889/apagar | grep -q "SecureProxy apagado" \
+            || { echo "/apagar no devolvió la página de despedida"; exit 1; }
+          wait $PROXY_PID && echo "el botón de apagar cerró con código 0"
+          test ! -f data/proxy.pid || { echo "el botón dejó el PID file huérfano"; exit 1; }
+
+          git checkout config/config.yaml
+
+      - name: Comprobar que el servicio de systemd es válido
+        run: |
+          salida=$(systemd-analyze verify deploy/secureproxy.service 2>&1 \
+                   | grep -v "is not executable" || true)
+          if [ -n "$salida" ]; then echo "$salida"; exit 1; fi
+          echo "unidad de systemd válida"

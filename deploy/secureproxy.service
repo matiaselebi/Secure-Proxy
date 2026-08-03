@@ -1,0 +1,135 @@
+### SecureProxy como servicio de Linux (systemd)
+###
+### Qué hace: arranca el proxy solo cuando prende la máquina, lo reinicia si
+### se cae, y manda todo lo que imprime al journal del sistema. Reemplaza a
+### SecureProxy.bat, que es de Windows y no sirve acá.
+###
+### CÓMO INSTALARLO
+###
+### La forma corta, que completa las rutas y el usuario solos:
+###
+###     sudo python3 deploy/instalar_servicio.py
+###
+### La forma a mano, si preferís ver cada paso: cambiá las tres líneas
+### marcadas con "<-- CAMBIAR" y después:
+###
+###     sudo cp deploy/secureproxy.service /etc/systemd/system/
+###     sudo systemctl daemon-reload
+###     sudo systemctl enable --now secureproxy
+###
+### Y para mirarlo:
+###
+###     systemctl status secureproxy      # ¿está corriendo?
+###     journalctl -u secureproxy -f      # los logs, en vivo
+###     sudo systemctl restart secureproxy
+###
+### OJO: no uses `scripts/stop_proxy.py` con el servicio activo. Ese script
+### mata el proceso por PID, y systemd lo va a volver a levantar enseguida
+### porque para él eso es una caída. Para parar de verdad:
+###     sudo systemctl stop secureproxy
+
+[Unit]
+Description=SecureProxy - proxy de filtrado con inteligencia de amenazas
+Documentation=https://github.com/matiaselebi/secure-proxy
+
+# El proxy resuelve nombres y descarga listas al arrancar. Sin esperar a que
+# la red esté REALMENTE lista (no solo el servicio levantado), el primer
+# refresco de feeds falla siempre y el panel arranca diciendo "sin datos".
+After=network-online.target
+Wants=network-online.target
+
+# Si se cae 5 veces en 5 minutos, algo está roto de verdad (config mala,
+# puerto ocupado) y reiniciar en loop solo llena el journal. Se rinde y lo
+# deja para que lo mires. Van acá, en [Unit], y no en [Service]: puestas en
+# el lugar equivocado systemd las ignora en silencio.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+[Service]
+Type=simple
+
+# <-- CAMBIAR: el usuario con el que corre. Que NO sea root: el proxy no lo
+# necesita para escuchar en 8888/8889, y si algún día algo sale mal, cuanto
+# menos permisos tenga, mejor.
+User=secureproxy
+Group=secureproxy
+
+# <-- CAMBIAR: la carpeta donde está el proyecto (la que tiene src/, data/,
+# config/). El proxy resuelve todas sus rutas relativas a esta.
+WorkingDirectory=/opt/secure-proxy
+
+# <-- CAMBIAR: el python del entorno virtual del proyecto.
+# El -u es importante: sin él, Python guarda lo que imprime en un buffer y
+# los mensajes llegan al journal a los cachos, minutos tarde. Con -u salen
+# en el momento, que es lo que querés cuando estás mirando por qué algo no
+# anda.
+ExecStart=/opt/secure-proxy/venv/bin/python -u scripts/run_proxy.py
+
+# ---- apagado limpio ----
+#
+# Esta línea no es cosmética. systemd manda SIGTERM por defecto, y el proxy
+# solo maneja KeyboardInterrupt, que en Python es SIGINT. Medido: con
+# SIGTERM el proceso muere con código 143 y deja el archivo data/proxy.pid
+# huérfano, así que el panel .bat y stop_proxy.py después creen que hay un
+# proxy corriendo que no existe. Con SIGINT sale con código 0, cierra los
+# dos servidores y borra el PID. Un cambio de una línea acá evita tocar el
+# código y funciona igual en Windows.
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+# ---- reinicio ----
+Restart=on-failure
+RestartSec=5
+
+# ---- logs ----
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=secureproxy
+Environment=PYTHONUNBUFFERED=1
+
+# ---- permisos: lo mínimo que necesita para funcionar ----
+#
+# Un proxy es un proceso que habla con internet todo el día. Si algún día
+# tiene un agujero, esto limita hasta dónde puede llegar quien lo aproveche.
+
+# No puede ganar más privilegios de los que arranca (nada de setuid).
+NoNewPrivileges=yes
+# /usr, /boot y /etc en solo lectura.
+ProtectSystem=full
+# Un /tmp propio, que no ve ni ensucia el del sistema.
+PrivateTmp=yes
+# Lo único que necesita escribir: su base de datos, sus listas y su config
+# (el panel puede cambiar opciones y las guarda en el YAML).
+# <-- CAMBIAR si moviste el proyecto.
+ReadWritePaths=/opt/secure-proxy/data /opt/secure-proxy/config
+# Nada de tocar el kernel, los cgroups ni los módulos.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# Solo sockets de red normales: nada de sockets crudos ni de netlink.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Solo las llamadas al sistema típicas de un servicio.
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# ---- si activás el bloqueo por firewall real ----
+#
+# `firewall.enabled: true` en config.yaml hace que el proxy ejecute reglas de
+# iptables, y para eso hace falta un permiso que este servicio le quita a
+# propósito. Si lo vas a usar, descomentá estas dos líneas. Mientras esté en
+# false (el default), dejalas comentadas: es justamente el permiso que no
+# querés darle a un proceso que habla con internet.
+#
+# AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+# CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target
