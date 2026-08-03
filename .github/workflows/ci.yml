@@ -22,10 +22,10 @@ jobs:
         python-version: ["3.11", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -82,7 +82,32 @@ jobs:
 
       - name: Comprobar que el servicio de systemd es válido
         run: |
-          salida=$(systemd-analyze verify deploy/secureproxy.service 2>&1 \
-                   | grep -v "is not executable" || true)
-          if [ -n "$salida" ]; then echo "$salida"; exit 1; fi
+          test -f deploy/secureproxy.service \
+            || { echo "falta deploy/secureproxy.service"; exit 1; }
+
+          salida=$(systemd-analyze verify deploy/secureproxy.service 2>&1 || true)
+          echo "$salida"
+
+          # Solo importan las líneas que hablan de NUESTRA unidad.
+          #
+          # systemd-analyze mezcla en la misma salida cosas del entorno donde
+          # corre, que no tienen nada que ver con el archivo. En los runners de
+          # GitHub aparece "Binding to IPv6 address not available since kernel
+          # does not support IPv6", y como antes acá se filtraba por el texto
+          # de un mensaje puntual ("is not executable") en vez de por a quién
+          # se refiere, ese aviso hacía fallar el CI entero con la unidad
+          # perfectamente bien. Filtrando por el nombre de la unidad, cualquier
+          # ruido futuro del entorno tampoco va a molestar.
+          #
+          # La excepción es "is not executable": el ExecStart apunta al python
+          # del venv del servidor, que en el runner no existe. Ahí el que está
+          # mal es el runner, no el archivo.
+          problemas=$(echo "$salida" | grep "secureproxy\.service" \
+                      | grep -v "is not executable" || true)
+          if [ -n "$problemas" ]; then
+            echo "----"
+            echo "problemas en la unidad:"
+            echo "$problemas"
+            exit 1
+          fi
           echo "unidad de systemd válida"
