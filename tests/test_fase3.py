@@ -6,6 +6,7 @@ tests cuidan las dos puntas: que el dato sea cierto, y que no poder
 obtenerlo nunca rompa el camino del tráfico.
 """
 
+import os
 import socket
 import sys
 import threading
@@ -76,9 +77,15 @@ def test_se_identifica_el_proceso_que_abrio_la_conexion():
     time.sleep(0.2)
 
     assert visto, "no se atendió la conexión"
-    # el que se conectó somos nosotros mismos
-    assert "python" in visto[0].lower()
-    assert "PID" in visto[0]
+    # El que se conectó somos nosotros mismos, así que lo que tiene que
+    # coincidir es NUESTRO PID.
+    #
+    # Antes acá se pedía que el nombre contuviera "python", y eso no prueba lo
+    # que parece: prueba cómo se lanzó pytest. Corriendo `python -m pytest` el
+    # ejecutable se llama "python3" y pasaba; corriendo el comando `pytest` a
+    # secas -que es lo que hace el CI- se llama "pytest" y fallaba, con la
+    # búsqueda funcionando perfectamente. El PID no depende de nada de eso.
+    assert f"(PID {os.getpid()})" in visto[0], visto[0]
 
 
 def test_un_puerto_que_no_existe_no_inventa_nada():
@@ -259,7 +266,11 @@ def test_el_proceso_queda_registrado_en_el_trafico_real(escenario):
     )
 
     fila = _esperar_fila(escenario["logger"], lambda f: bool(f["process"]))
-    assert "python" in fila["process"].lower()
+    # Quien abrió la conexión hacia el proxy es este mismo proceso de tests,
+    # así que el PID registrado tiene que ser el nuestro. Se compara por PID y
+    # no por nombre: el nombre depende de cómo se haya lanzado pytest, no del
+    # proxy (ver el comentario en test_se_identifica_el_proceso_que_abrio_la_conexion).
+    assert f"(PID {os.getpid()})" in fila["process"], fila["process"]
 
 
 def test_el_proceso_se_resuelve_aunque_la_conexion_se_bloquee(escenario):
