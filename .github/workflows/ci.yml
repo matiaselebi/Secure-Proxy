@@ -42,6 +42,20 @@ jobs:
       # clona el repo.
       - name: Comprobar que arranca, responde y apaga limpio
         run: |
+          # ---- set -m: sin esto el apagado por SIGINT no se puede probar ----
+          #
+          # Bash, cuando NO es interactivo y no tiene control de trabajos, le
+          # deja el SIGINT en SIG_IGN a todo lo que se lanza con "&". O sea:
+          # en un runner, `kill -INT $PID` sobre el proxy no hace absolutamente
+          # nada, el proceso sigue vivo y el `wait` de abajo se cuelga para
+          # siempre. A mano no se ve nunca, porque una terminal interactiva sí
+          # tiene control de trabajos y ahí el SIGINT llega bien.
+          #
+          # `set -m` lo prende, cada proceso de fondo queda en su propio grupo
+          # y con los handlers por defecto, que es justo lo que hace falta para
+          # que esta prueba pruebe algo.
+          set -m
+
           python - <<'EOF'
           import pathlib
           p = pathlib.Path('config/config.yaml')
@@ -50,31 +64,51 @@ jobs:
                         .replace('dashboard_port: 8889', 'dashboard_port: 18889'),
                        encoding='utf-8')
           EOF
-          python -u scripts/run_proxy.py &
-          PROXY_PID=$!
-          for _ in $(seq 1 30); do
-            curl -sf http://127.0.0.1:18889/health > /dev/null && break
-            sleep 1
-          done
-          curl -sf http://127.0.0.1:18889/health || { echo "el panel nunca respondió"; exit 1; }
+
+          # Lo que imprime el proxy va a un archivo, no al vacío: si algo sale
+          # mal, "el panel nunca respondió" no dice nada y el log sí. Un CI que
+          # falla sin mostrar el motivo obliga a adivinar.
+          arrancar() {
+            python -u scripts/run_proxy.py > /tmp/proxy.log 2>&1 &
+            PROXY_PID=$!
+            for _ in $(seq 1 30); do
+              curl -sf http://127.0.0.1:18889/health > /dev/null && return 0
+              # Si el proceso ya murió no tiene sentido seguir esperando.
+              kill -0 $PROXY_PID 2>/dev/null || break
+              sleep 1
+            done
+            echo "::error::el proxy no respondió en /health. Esto imprimió:"
+            cat /tmp/proxy.log
+            return 1
+          }
+
+          arrancar
           curl -sf -o /dev/null -w "panel: HTTP %{http_code}\n" http://127.0.0.1:18889/
+
           # SIGINT es la señal que usa el servicio de systemd, justamente
           # porque con SIGTERM el apagado deja basura.
           kill -INT $PROXY_PID
+          # Con techo: si el apagado se cuelga, mejor fallar en 30 segundos con
+          # el log a la vista que consumir los 10 minutos del job.
+          for _ in $(seq 1 30); do
+            kill -0 $PROXY_PID 2>/dev/null || break
+            sleep 1
+          done
+          if kill -0 $PROXY_PID 2>/dev/null; then
+            echo "::error::el proxy sobrevivió al SIGINT"
+            cat /tmp/proxy.log
+            kill -9 $PROXY_PID
+            exit 1
+          fi
           wait $PROXY_PID && echo "apagó con código 0"
           test ! -f data/proxy.pid || { echo "quedó el PID file huérfano"; exit 1; }
 
           # Y lo mismo, pero apagándolo desde el botón del panel. Los tests
           # verifican la ruta contra un apagado de mentira; esto verifica que
           # el proceso de verdad se muera y limpie igual que con Ctrl+C.
-          python -u scripts/run_proxy.py &
-          PROXY_PID=$!
-          for _ in $(seq 1 30); do
-            curl -sf http://127.0.0.1:18889/health > /dev/null && break
-            sleep 1
-          done
+          arrancar
           curl -sf http://127.0.0.1:18889/apagar | grep -q "SecureProxy apagado" \
-            || { echo "/apagar no devolvió la página de despedida"; exit 1; }
+            || { echo "::error::/apagar no devolvió la página de despedida"; cat /tmp/proxy.log; exit 1; }
           wait $PROXY_PID && echo "el botón de apagar cerró con código 0"
           test ! -f data/proxy.pid || { echo "el botón dejó el PID file huérfano"; exit 1; }
 
