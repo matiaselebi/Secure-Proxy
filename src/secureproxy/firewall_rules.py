@@ -13,11 +13,15 @@ import threading
 
 
 class FirewallManager:
-    def __init__(self, enabled: bool = False):
+    def __init__(self, enabled: bool = False, hips=None):
         self.enabled = enabled
         self.system = platform.system()  # "Windows", "Linux", "Darwin"
         self._already_blocked_ips: set[str] = set()
         self._lock = threading.Lock()
+        # Cliente de SecureHIPS. Si está configurado y contesta, el bloqueo lo
+        # pone él y acá no se escribe ninguna regla. Ver `hips_client.py`: el
+        # HIPS tiene vencimiento, lista blanca y registro; esta clase no.
+        self.hips = hips
 
     def build_block_command(self, ip: str) -> list[str]:
         if self.system == "Windows":
@@ -42,6 +46,21 @@ class FirewallManager:
             ipaddress.ip_address(ip)
         except ValueError:
             return f"(no es una IP valida: {ip})"
+
+        # Primero se le pregunta a SecureHIPS. Si lo toma, acá no se escribe
+        # nada: un bloqueo puesto por los dos lados es una regla duplicada que
+        # el HIPS no va a poder levantar cuando venza, porque la otra no es
+        # suya. Ver ADR 0006 en SecureHIPS.
+        #
+        # Ojo con el orden: esto va ANTES del set de ya-bloqueadas a propósito.
+        # Ese set es la memoria de las reglas que escribió ESTA clase; las que
+        # pone el HIPS las recuerda el HIPS, que además sabe cuándo vencen.
+        if self.hips is not None and getattr(self.hips, "configurado", bool)():
+            tomado, detalle = self.hips.bloquear(ip, motivo="conexión saliente bloqueada")
+            if tomado:
+                return detalle
+            # No lo tomó: seguimos como siempre. La herramienta no puede
+            # quedarse sin bloquear porque la otra esté apagada.
 
         with self._lock:
             if ip in self._already_blocked_ips:

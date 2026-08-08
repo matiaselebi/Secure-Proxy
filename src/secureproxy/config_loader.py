@@ -113,6 +113,19 @@ class FirewallConfig:
 
 
 @dataclass
+class HipsConfig:
+    """Delegarle los bloqueos a SecureHIPS en vez de escribir reglas acá.
+
+    Viene prendido, pero prendido no alcanza: además hace falta el
+    `SECUREHIPS_API_TOKEN` en el `.env`, el mismo que tiene SecureHIPS. Sin
+    token no se intenta nada y el proxy hace lo de siempre.
+    """
+
+    enabled: bool = True
+    url: str = "http://127.0.0.1:8892"
+
+
+@dataclass
 class Config:
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
     filtering: FilteringConfig = field(default_factory=FilteringConfig)
@@ -121,7 +134,11 @@ class Config:
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     firewall: FirewallConfig = field(default_factory=FirewallConfig)
+    hips: HipsConfig = field(default_factory=HipsConfig)
     abuseipdb_api_key: str = ""
+    # El token con el que se le piden bloqueos a SecureHIPS. Sale del .env,
+    # nunca del YAML, y no tiene valor por defecto.
+    securehips_api_token: str = ""
 
     def resolve_path(self, relative_path: str) -> Path:
         """Resuelve una ruta relativa al config.yaml contra la raíz del proyecto."""
@@ -150,6 +167,7 @@ def load_config(config_path: str | None = None) -> Config:
     alerts_raw = raw.get("alerts", {})
     telegram_raw = raw.get("telegram", {})
     firewall_raw = raw.get("firewall", {})
+    hips_raw = raw.get("hips", {})
 
     cfg = Config(
         proxy=ProxyConfig(**proxy_raw),
@@ -163,6 +181,8 @@ def load_config(config_path: str | None = None) -> Config:
             chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
         ),
         firewall=FirewallConfig(**firewall_raw),
+        hips=HipsConfig(**hips_raw),
         abuseipdb_api_key=os.getenv("ABUSEIPDB_API_KEY", ""),
+        securehips_api_token=os.getenv("SECUREHIPS_API_TOKEN", ""),
     )
     return cfg

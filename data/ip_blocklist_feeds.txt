@@ -1,6 +1,6 @@
-# Generado automáticamente por scripts/update_blocklist.py
-# Fuentes: Feodo Tracker (abuse.ch). NO editar a mano: se sobreescribe.
-# Total de entradas: 5
+# Generado por Secure-Intel. NO editar a mano: se sobreescribe.
+# IPs de comando y control (Feodo Tracker)
+# Total: 5
 
 162.243.103.246
 178.62.3.223

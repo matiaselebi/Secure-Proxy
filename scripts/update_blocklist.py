@@ -33,7 +33,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 # Las descargas usan http_client y no `requests` directo: si salieran por el
 # proxy del sistema -que es SecureProxy- el proxy estaria bajando sus
 # propias listas a traves de si mismo (ver http_client.py).
-from secureproxy import feeds_status, http_client  # noqa: E402
+from secureproxy import feeds_status, http_client, intel_puente  # noqa: E402
 
 DATA_DIR = PROJECT_ROOT / "data"
 
@@ -259,6 +259,13 @@ def _guardar_si_tiene_sentido(path: Path, items: set[str], validador, nota: str,
 def main(force: bool = False, min_interval_hours: float = 6) -> bool:
     """Descarga y regenera las listas. Devuelve True si efectivamente se
     actualizó algo, False si se omitió (por frescura) o falló todo."""
+
+    # Si Secure-Intel está clonado al lado, baja él y deja acá los mismos
+    # archivos. Es el único lugar donde vive la URL de cada feed. Si no está,
+    # sigue todo el camino de siempre, que quedó intacto abajo.
+    if intel_puente.actualizar(forzar=force):
+        print("[update_blocklist] las listas las bajó Secure-Intel")
+        return True
 
     if not force and not is_stale(DOMAIN_OUTPUT_PATH, min_interval_hours):
         print(

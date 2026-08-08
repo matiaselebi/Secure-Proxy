@@ -1027,7 +1027,13 @@ Configuración, sin editar el archivo y sin reiniciar.
   de aplicarlo en serio; ver [ADR 0003](docs/adr/0003-audit-mode.md)).
 - `firewall.enabled` **(dashboard)**: si además de loguear, ejecuta reglas de
   firewall reales (por defecto `false` - modo dry-run, solo genera el
-  comando).
+  comando). Si SecureHIPS está enganchado, esto casi no se usa: el bloqueo lo
+  pone él y acá no se escribe ninguna regla.
+- `hips.enabled`: delegarle los bloqueos a SecureHIPS (por defecto `true`).
+  Necesita además el `SECUREHIPS_API_TOKEN` en el `.env`; sin token no se
+  intenta nada y el proxy hace lo de siempre.
+- `hips.url`: dónde escucha SecureHIPS (por defecto
+  `http://127.0.0.1:8892`).
 - `telegram.enabled`: si envía alertas por Telegram (opcional, desactivado
   por defecto).
 - `logging.db_path`: archivo SQLite con el historial de conexiones
@@ -1037,6 +1043,61 @@ Configuración, sin editar el archivo y sin reiniciar.
   crece para siempre; al pasarlo se borran las más viejas. `0` desactiva el
   recorte, pero no conviene: una base gigante hace que el dashboard tarde
   en abrir.
+
+## Los feeds los baja Secure-Intel
+
+La URL de URLhaus estaba escrita en dos lugares: acá y en SecureDNS. Igual
+OpenPhish, e igual las dos bases de db-ip. El día que abuse.ch cambie una URL,
+arreglás uno, verificás que anda, y el otro se queda bajando un 404 en
+silencio: el archivo viejo sigue ahí, el panel sigue diciendo que hay 40.000
+reglas, y nadie se entera hasta que pasa algo.
+
+[Secure-Intel](../secure-intel/) es el único lugar donde vive esa URL ahora.
+Si está clonado al lado, SecureProxy le pide que baje y deja los archivos acá; si no
+está, se bajan como siempre con el código de `scripts/update_blocklist.py`,
+que quedó intacto. Nadie está obligado a clonar un tercer repositorio.
+
+**El motor de filtrado no cambió una línea.** Secure-Intel escribe los mismos
+archivos de texto, en el mismo formato y en el mismo lugar. Lo único que
+cambia es de dónde salen esos bytes. Cambiar además el motor sería correr un
+riesgo que esta migración no necesita correr para cumplir su objetivo.
+
+## Los bloqueos de firewall los pone SecureHIPS
+
+SecureProxy sabe muy bien **cuándo** una IP es mala: tiene los feeds, la
+reputación de AbuseIPDB y ve todo el tráfico saliente. Lo que no tenía era un
+sistema de bloqueos. La regla que escribía `firewall_rules.py` no vencía
+nunca, no pasaba por ninguna lista blanca y no quedaba anotada en ningún lado
+con motivo, país y un botón para levantarla. Una IP bloqueada por error a las
+tres de la mañana seguía bloqueada en marzo.
+
+SecureHIPS tiene exactamente eso, construido y probado. Así que ahora **el
+proxy detecta y pide, y el HIPS bloquea**. La decisión no se mueve de acá: lo
+único que cambia es quién escribe la regla y quién se acuerda de sacarla.
+
+Para prenderlo hacen falta dos cosas:
+
+1. `hips.enabled: true` en el `config.yaml` (viene así por defecto).
+2. El mismo `SECUREHIPS_API_TOKEN` en el `.env` de **los dos** proyectos:
+
+   ```bash
+   python -c "import secrets; print(secrets.token_urlsafe(32))"
+   ```
+
+**Si SecureHIPS no está corriendo no pasa nada.** El proxy hace exactamente lo
+de siempre: escribe la regla él, o la loguea si el bloqueo por firewall está
+apagado. Nunca se queda esperando ni deja pasar tráfico que iba a cortar. Hay
+un fusible además: después de tres fallas seguidas deja de intentar por un
+minuto, para que un HIPS colgado no cueste un timeout en el camino de cada
+conexión.
+
+Lo que más se gana es esto: si la IP está en la lista blanca de SecureHIPS, el
+proxy **no** la bloquea por su cuenta. Antes eran dos listas blancas separadas
+y una IP marcada como "no la toques nunca" en una podía terminar bloqueada por
+la otra.
+
+El reparto completo está en el
+[ADR 0006 de SecureHIPS](../secure-hips/docs/adr/0006-un-solo-dueno-del-firewall.md).
 
 ## El proxy nunca sale por el proxy
 

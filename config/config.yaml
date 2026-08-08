@@ -84,7 +84,7 @@ dashboard:
   # Siguen guardados y siguen contados: el panel te dice cuántas conexiones
   # está ocultando, buscar un dominio ignora este filtro a propósito, y el
   # botón de la pestaña Configuración lo apaga sin reiniciar.
-  hide_noise: true
+  hide_noise: false
   noisy_domains_path: "data/noisy_domains.txt"
 
 # Avisos en el escritorio del sistema. No depende de ningún servicio externo
@@ -103,3 +103,16 @@ firewall:
   # Si es true, además de loguear ejecuta reglas iptables reales.
   # Si es false (recomendado para empezar), solo imprime/loguea el comando.
   enabled: false
+
+# Delegarle los bloqueos a SecureHIPS en vez de escribir reglas de firewall
+# acá. SecureProxy sabe muy bien CUÁNDO una IP es mala (tiene los feeds y la
+# reputación de AbuseIPDB); lo que no tiene es un sistema de bloqueos: sus
+# reglas no vencen nunca, no pasan por ninguna lista blanca y no quedan
+# registradas con motivo, país y un botón para levantarlas. SecureHIPS sí.
+#
+# Además de esto en true hace falta un SECUREHIPS_API_TOKEN en el .env, el
+# mismo que tenga SecureHIPS. Si el HIPS no está corriendo o no comparten
+# token, el proxy hace exactamente lo de siempre.
+hips:
+  enabled: true
+  url: "http://127.0.0.1:8892"

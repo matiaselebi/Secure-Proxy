@@ -25,6 +25,7 @@ import update_blocklist  # noqa: E402
 from secureproxy.config_loader import load_config  # noqa: E402
 from secureproxy.filter_engine import FilterEngine  # noqa: E402
 from secureproxy.firewall_rules import FirewallManager  # noqa: E402
+from secureproxy.hips_client import ClienteHIPS  # noqa: E402
 from secureproxy.logger_db import LoggerDB  # noqa: E402
 from secureproxy.ip_reputation_cache import PersistentIPCache  # noqa: E402
 from secureproxy.notifier import TelegramNotifier  # noqa: E402
@@ -178,7 +179,18 @@ def main() -> None:
         str(cfg.resolve_path(cfg.logging.db_path)), max_rows=cfg.logging.max_rows
     )
     notifier = TelegramNotifier(cfg.telegram.enabled, cfg.telegram.bot_token, cfg.telegram.chat_id)
-    firewall = FirewallManager(cfg.firewall.enabled)
+    # Si SecureHIPS está prendido y compartimos token, los bloqueos los pone
+    # él: tienen vencimiento, pasan por su lista blanca y quedan registrados
+    # con motivo y país. Si no está, el proxy hace exactamente lo de siempre.
+    hips = ClienteHIPS(
+        url=cfg.hips.url if cfg.hips.enabled else "",
+        token=cfg.securehips_api_token,
+    )
+    firewall = FirewallManager(cfg.firewall.enabled, hips=hips)
+    if hips.configurado():
+        print(f"[SecureProxy] los bloqueos se le piden a SecureHIPS ({cfg.hips.url})")
+    elif cfg.hips.enabled:
+        print(f"[SecureProxy] SecureHIPS no está enganchado: {hips.por_que_no()}")
 
     # Las listas manuales se limpian una vez al arrancar: una entrada como
     # "https://www.ejemplo.com/algo" no matchea nunca, porque el proxy compara
