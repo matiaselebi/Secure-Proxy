@@ -513,11 +513,10 @@ def test_una_conexion_permitida_queda_registrada_con_ip_pais_asn_y_proveedor(esc
 
 
 def test_un_dominio_de_la_allowlist_tambien_queda_con_su_destino(escenario, tmp_path):
-    """El caso que fallaba: la allowlist corta antes de resolver, así que la
-    decisión vuelve sin IP. El destino tiene que salir igual, del socket."""
+    """La allowlist también resuelve el destino para aplicar la barrera de LAN."""
     (tmp_path / "al.txt").write_text("127.0.0.1\n", encoding="utf-8")
     escenario["engine"].allowlist.reload()
-    assert escenario["engine"].evaluate("127.0.0.1").resolved_ip is None
+    assert escenario["engine"].evaluate("127.0.0.1").resolved_ip == "127.0.0.1"
 
     requests.get(
         f"http://127.0.0.1:{escenario['backend_port']}/",

@@ -11,7 +11,8 @@ nodos TOR, consultar AbuseIPDB o actualizar sus feeds, se mandaba el pedido
 Eso no es solo raro: es un bucle que se retroalimenta. El pedido entra al
 proxy, el proxy lo evalúa, evaluarlo necesita la lista de TOR, bajar la
 lista de TOR dispara otro pedido al proxy, y así. En la PC donde apareció,
-el proxy llegó a registrar **1.644.074 conexiones a check.torproject.org en
+el proxy llegó a registrar **1.644.074 conexiones al servicio que lista
+los nodos de TOR en
 dos días** -el 99,8% de todo el log-, con la base de datos inflada a 168 MB
 y el dashboard imposible de abrir.
 

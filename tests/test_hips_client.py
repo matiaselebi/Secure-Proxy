@@ -160,27 +160,67 @@ def test_un_rechazo_del_hips_no_abre_el_fusible(hips):
 
 def test_si_el_hips_lo_toma_el_proxy_no_escribe_ninguna_regla(hips):
     """Una regla puesta por los dos lados es una que el HIPS no puede levantar."""
-    fw = FirewallManager(enabled=False, hips=ClienteHIPS(url=hips, token=TOKEN))
+    fw = FirewallManager(enabled=True, hips=ClienteHIPS(url=hips, token=TOKEN))
     salida = fw.block_ip("203.0.113.15")
     assert "SecureHIPS" in salida
     assert "netsh" not in salida and "iptables" not in salida
 
 
-def test_si_el_hips_no_esta_el_proxy_arma_la_regla_como_siempre():
+def test_si_el_hips_no_esta_el_proxy_YA_NO_arma_ninguna_regla():
+    """Fase 2 del punto 8: se borró el camino de respaldo.
+
+    Antes, con el HIPS caído, el proxy escribía su propia regla de netsh o
+    iptables. Ese respaldo era el problema: hacía que el firewall tuviera dos
+    dueños justo cuando el HIPS estaba apagado, que es cuando menos se mira.
+
+    Ahora la respuesta es honesta y se ve en el panel: no bloqueé nada, y por
+    qué.
+    """
     fw = FirewallManager(
-        enabled=False,
+        enabled=True,
         hips=ClienteHIPS(url="http://127.0.0.1:9", token=TOKEN, timeout=0.5),
     )
     salida = fw.block_ip("203.0.113.16")
-    assert "netsh" in salida or "iptables" in salida
+    assert "netsh" not in salida and "iptables" not in salida
+    # Dice que no pudo, en vez de escribir una regla por su cuenta.
+    assert "no pude hablar con SecureHIPS" in salida
 
 
-def test_sin_cliente_configurado_el_firewall_anda_igual_que_antes():
-    """La compatibilidad hacia atrás: nadie tiene que enganchar el HIPS."""
-    assert "203.0.113.17" in FirewallManager(enabled=False).block_ip("203.0.113.17")
+def test_sin_cliente_configurado_no_se_bloquea_y_se_dice():
+    """Sin HIPS enganchado no hay bloqueo posible, y eso se informa en vez de
+    quedar en silencio."""
+    salida = FirewallManager(enabled=True).block_ip("203.0.113.17")
+    assert "SecureHIPS no está configurado" in salida
+
+
+def test_no_queda_ni_una_linea_que_escriba_en_el_firewall():
+    """El test de "no vuelvas a hacerlo". Un solo dueño del firewall.
+
+    Se mira el ÁRBOL del módulo y no su texto. La primera versión de este test
+    buscaba las palabras en el código fuente y falló al instante: el docstring
+    del archivo explica justamente que antes usaba `netsh` e `iptables`, así
+    que el test se encontraba a sí mismo. Un test que no distingue una línea
+    de código de una línea de prosa no está probando el código.
+    """
+    import ast
+    import inspect
+
+    from secureproxy import firewall_rules
+
+    arbol = ast.parse(inspect.getsource(firewall_rules))
+    importados = set()
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Import):
+            importados.update(a.name.split(".")[0] for a in nodo.names)
+        elif isinstance(nodo, ast.ImportFrom) and nodo.module:
+            importados.add(nodo.module.split(".")[0])
+    # Sin `subprocess` no hay forma de ejecutar un comando, y sin `platform`
+    # no hay forma de elegir entre netsh e iptables. Los dos se fueron.
+    assert "subprocess" not in importados
+    assert "platform" not in importados
 
 
 def test_una_ip_invalida_no_llega_ni_al_hips(hips):
     fw = FirewallManager(enabled=False, hips=ClienteHIPS(url=hips, token=TOKEN))
-    assert "no es una IP valida" in fw.block_ip("no-soy-una-ip")
+    assert "no es una IP válida" in fw.block_ip("no-soy-una-ip")
     assert not HipsFalso.recibidos

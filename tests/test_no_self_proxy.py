@@ -94,21 +94,6 @@ def test_los_modulos_que_salen_a_internet_usan_el_cliente_seguro(modulo, atribut
     )
 
 
-def test_la_lista_de_tor_se_baja_sin_pasar_por_el_proxy(monkeypatch):
-    llamadas = []
-
-    def fake_get(url, **kwargs):
-        llamadas.append((url, kwargs.get("proxies")))
-        return _RespuestaOK()
-
-    monkeypatch.setattr(http_client, "get", fake_get)
-    TorExitNodeList(cache_ttl=3600).is_tor_exit_node("9.9.9.9")
-
-    assert llamadas, "tendría que haber bajado la lista"
-    url, _proxies = llamadas[0]
-    assert "torproject" in url
-
-
 def test_abuseipdb_se_consulta_sin_pasar_por_el_proxy(monkeypatch):
     llamadas = []
     monkeypatch.setattr(
@@ -136,57 +121,30 @@ def test_telegram_alerta_sin_pasar_por_el_proxy(monkeypatch):
 # ---------- 2) una descarga que falla no se reintenta en cada conexión ----------
 
 
-def test_una_descarga_fallida_no_se_reintenta_en_cada_conexion(monkeypatch):
-    """El bug exacto: `_last_fetch` solo se actualizaba en caso de éxito, así
-    que con la descarga caída cada conexión evaluada largaba una descarga
-    nueva. Con tráfico normal eso son miles de pedidos por minuto."""
-    intentos = []
+# --------------------------------------------------------------------------
+# Los cuatro tests que había acá sobre la descarga de la lista de TOR se
+# fueron con el código que probaban (fase 2 del punto 8: el proxy ya no baja
+# feeds, los baja Secure-Intel).
+#
+# Uno de ellos cuidaba el peor bug que tuvo este proyecto: si la descarga
+# fallaba la lista quedaba vacía, la condición de refresco daba verdadero
+# siempre, y como esto se consulta en CADA conexión, terminó en 1.644.074
+# pedidos en dos días. Ese bug ya no puede volver por una razón mejor que un
+# test: **no hay descarga**. La lista la mantiene Secure-Intel, que baja una
+# vez cada seis horas pase lo que pase.
+#
+# Lo que sigue probándose acá abajo es lo que sí quedó saliendo a internet:
+# AbuseIPDB y Telegram, que no pueden salir por el proxy del sistema porque el
+# proxy del sistema es este mismo proceso.
 
-    def siempre_falla(url, **kwargs):
-        intentos.append(url)
-        raise requests.ConnectionError("sin red (simulado)")
+def test_el_proxy_ya_no_descarga_ninguna_lista():
+    """El test de "no vuelvas a hacerlo"."""
+    import ast
+    import inspect
 
-    monkeypatch.setattr(http_client, "get", siempre_falla)
-    tor = TorExitNodeList(cache_ttl=3600)
+    from secureproxy import threat_intel
 
-    for _ in range(50):
-        tor.is_tor_exit_node("1.2.3.4")
-
-    assert len(intentos) == 1, (
-        f"reintentó {len(intentos)} veces en 50 conexiones; tiene que esperar "
-        "antes de volver a probar"
-    )
-
-
-def test_pasado_el_enfriamiento_vuelve_a_intentar(monkeypatch):
-    """Tampoco puede quedarse apagado para siempre: si la red vuelve, la
-    detección de TOR tiene que revivir sola."""
-    intentos = []
-
-    def siempre_falla(url, **kwargs):
-        intentos.append(url)
-        raise requests.ConnectionError("sin red (simulado)")
-
-    monkeypatch.setattr(http_client, "get", siempre_falla)
-    tor = TorExitNodeList(cache_ttl=3600)
-    tor.is_tor_exit_node("1.2.3.4")
-    assert len(intentos) == 1
-
-    # Simula que pasó el tiempo de enfriamiento.
-    tor._last_attempt -= tor.RETRY_AFTER_FAILURE_SECONDS + 1
-    tor.is_tor_exit_node("1.2.3.4")
-
-    assert len(intentos) == 2
-
-
-def test_una_descarga_exitosa_se_cachea_por_el_ttl(monkeypatch):
-    descargas = []
-    monkeypatch.setattr(
-        http_client, "get", lambda url, **kw: (descargas.append(url), _RespuestaOK())[1]
-    )
-    tor = TorExitNodeList(cache_ttl=3600)
-
-    for _ in range(100):
-        assert tor.is_tor_exit_node("1.1.1.1") is True
-
-    assert len(descargas) == 1, "con la lista en memoria no se vuelve a bajar"
+    arbol = ast.parse(inspect.getsource(threat_intel.TorExitNodeList))
+    llamadas = [n for n in ast.walk(arbol) if isinstance(n, ast.Call)]
+    nombres = {getattr(n.func, "attr", "") for n in llamadas}
+    assert "get" not in nombres, "TorExitNodeList volvió a descargar algo"

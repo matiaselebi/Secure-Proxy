@@ -78,9 +78,13 @@ combinarlas a mano:
     (con cache persistente en SQLite, ver más abajo).
 - Cada conexión (permitida o bloqueada) queda registrada en SQLite con **el
   proceso que la abrió**, el volumen subido y bajado, la IP de destino, el
-  país, el ASN y el proveedor, con avisos en el escritorio y la opción de
-  generar/ejecutar reglas de firewall (`iptables` en Linux, `netsh
-  advfirewall` en Windows) para bloqueos persistentes.
+  país, el ASN y el proveedor, con avisos en el escritorio. Para un bloqueo
+  persistente **le pide la regla a SecureHIPS**: este proyecto ya no escribe
+  `iptables` ni `netsh` (un solo dueño del firewall, ver
+  [ADR 0008](docs/adr/0008-el-proxy-se-queda-con-lo-suyo.md)).
+- Detecta **ritmo de beacon**: qué proceso habla con qué destino a intervalos
+  demasiado parejos para ser una persona. Es lo único que hace este proyecto
+  que ninguna otra pieza de la suite puede hacer.
 
 ## Contexto de seguridad
 
@@ -113,8 +117,13 @@ del diseño (evita dar una falsa sensación de cobertura total):
   esa capa específica de filtrado queda temporalmente inactiva; las demás
   (blocklist de dominios, IPs de C2, TOR) siguen funcionando igual. Ver
   [ADR 0002](docs/adr/0002-abuseipdb-fail-open-circuit-breaker.md).
-- **Pensado para una sola máquina**, no para ser un gateway de red para
-  varios dispositivos.
+- **Pensado para una sola máquina de escritorio**, no para ser un gateway de
+  red. En un servidor no cubre celulares, consolas ni televisores, porque a
+  esos no hay dónde configurarles un proxy: para eso está SecureDNS sobre
+  Pi-hole. Ver "Dónde corre SecureProxy (y dónde no)" más abajo.
+- **No baja listas de amenazas**: se las pide a Secure-Intel. Sin Secure-Intel
+  las listas que ya estaban siguen funcionando, pero no se actualizan, y se
+  dice en pantalla en vez de fallar en silencio.
 - **No reemplaza un antivirus ni una VPN**: es una capa de filtrado de
   destinos de red, complementaria a esas otras capas, no un sustituto.
 
@@ -696,29 +705,82 @@ completa al final, con el `id` que devuelve el registro.
 
 ## Beaconing: destinos con ritmo de reloj
 
+**Esto es lo único que hace este proyecto que ninguna otra pieza de la suite
+puede hacer.** Pi-hole ve el nombre consultado y lo bloquea antes y mejor.
+Suricata ve los paquetes. Ninguno de los dos sabe que fue `rundll32.exe` el
+que abrió esa conexión, ni que la repite cada 60 segundos. El proxy está
+parado en el único lugar donde el proceso, el volumen y el momento se ven
+juntos.
+
 Ya existía "destinos insistentes", que mide **volumen** y con eso agarra un
 minero: martilla el mismo pool miles de veces. Un implante de
-comando-y-control hace exactamente lo contrario, justamente para no llamar
-la atención: se conecta poco, a veces una vez por minuto, pero lo hace con
+comando-y-control hace exactamente lo contrario, justamente para no llamar la
+atención: se conecta poco, a veces una vez por minuto, pero lo hace con
 regularidad de reloj porque del otro lado hay un programa preguntando "¿hay
 órdenes nuevas?".
 
-Entonces la señal no es cuánto, es **cada cuánto**. Se calculan los
-intervalos entre conexiones consecutivas de cada destino y se mira su
-dispersión relativa (desvío estándar sobre promedio). Una persona navegando
-da valores altísimos; un programa automático da valores cerca de cero.
+Entonces la señal no es cuánto, es **cada cuánto**. Se mide con el
+**coeficiente de variación** de los intervalos: el desvío estándar dividido
+por el promedio. Es una sola cuenta y tiene la propiedad que la hace correcta
+para esto: **no depende de la escala**. Un beacon de 60 segundos y uno de una
+hora dan el mismo número si son igual de regulares, y eso es lo que se quiere,
+porque el período lo elige el atacante. Un umbral fijo sobre el desvío no
+serviría: cinco segundos de variación es muchísimo para un beacon de diez
+segundos y nada para uno de una hora.
 
-Se descartan a propósito los intervalos de menos de 5 segundos (eso es una
-página cargando sus recursos), los de más de 2 horas (con tan pocas muestras
-cualquier cosa parece regular) y los destinos con demasiadas conexiones (eso
-es volumen, y ya lo agarra el otro detector).
+Se agrupa por **proceso y destino**, no solo por destino. Dos programas
+hablando con el mismo servidor son dos historias, y mezclarlas rompe
+justamente la regularidad que se está buscando: los intervalos entrelazados de
+dos beacons parecen caóticos.
+
+Se descartan a propósito los intervalos de menos de 20 segundos (eso es una
+página cargando sus recursos) y los de más de seis horas (con la ventana de
+historial que se guarda, cualquier cosa parece regular). Hacen falta al menos
+8 conexiones antes de opinar: con tres intervalos, cualquier cosa parece
+regular por casualidad. Cuando la respuesta es "no", el motivo se escribe
+igual, porque el motivo del "no" es lo que permite entender la pantalla en vez
+de confiar en ella.
 
 Esto **no bloquea nada**, y la razón está escrita en el propio panel: un
-cliente de correo o de mensajería revisando cada 60 segundos da exactamente
-la misma firma. Por eso la tabla muestra el proceso al lado, que es lo que
-te dice cuál de las dos cosas es: `outlook.exe` es una, `rundll32.exe` es
-otra. Ver [ADR 0007](docs/adr/0007-deteccion-por-comportamiento.md), que
-explica por qué estos dos detectores señalan en vez de bloquear.
+cliente de correo o de mensajería revisando cada 60 segundos da exactamente la
+misma firma. Por eso la tabla muestra el proceso al lado, que es lo que te dice
+cuál de las dos cosas es: `outlook.exe` es una, `rundll32.exe` es otra.
+
+Lo detectado se **guarda** en la tabla `ritmos` cada diez minutos, además de
+mostrarse. Es para que SecureCenter lo lea como lee todo lo demás (de una
+tabla, no por la red) y arme incidentes con él sin repetir la cuenta. Su regla
+`ritmo_hacia_destino_marcado` cruza este ritmo con los bloqueos del DNS, del
+proxy y del HIPS: cada mitad es débil sola (hay programas legítimos con ritmo
+perfecto, y hay destinos marcados que son solo publicidad) y las dos juntas
+describen un implante esperando órdenes.
+
+Ver [ADR 0007](docs/adr/0007-deteccion-por-comportamiento.md), que explica por
+qué estos detectores señalan en vez de bloquear, y
+[ADR 0008](docs/adr/0008-el-proxy-se-queda-con-lo-suyo.md), que explica por qué
+esto es lo único que quedó.
+
+## Dónde corre SecureProxy (y dónde no)
+
+Es un proxy **explícito**: cubre a los programas configurados para pasar por
+él. En una PC de escritorio eso alcanza, porque SecureCenter pone el proxy del
+sistema y el navegador lo hereda.
+
+En un servidor o en el router de la casa, no. Un celular no se configura solo
+para pasar por un proxy, una consola no tiene dónde configurarlo, un televisor
+tampoco. Ponerlo ahí da una pantalla con números que solo cubren al puñado de
+programas del propio servidor, y eso es peor que no tener nada: **parece**
+cobertura de toda la casa.
+
+Lo que sí cubre a toda la casa es el DNS, porque los equipos lo agarran del
+router sin que nadie los toque uno por uno. Por eso el que va en el servidor
+es SecureDNS sobre Pi-hole, y el proxy se queda en el escritorio.
+
+Esto no es una advertencia en un README que nadie lee cuando el proceso ya
+está corriendo: `src/secureproxy/alcance.py` lo imprime al arrancar, y
+SecureCenter no incluye el proxy en el plan del núcleo en un equipo sin
+escritorio (sale un paso que dice por qué). El botón individual sí lo prende
+igual: apretar un botón es una orden de una persona, y hay un caso legítimo
+(mirar qué sale del propio servidor).
 
 ## Avisos en el escritorio
 

@@ -39,7 +39,7 @@ def escribir_atomico(path: Path, contenido: str) -> None:
 
 import requests
 
-from . import http_client
+from . import http_client, intel_puente
 
 
 class Blocklist:
@@ -368,89 +368,59 @@ class AbuseIPDBClient:
 
 
 class TorExitNodeList:
-    """Mantiene en memoria la lista de IPs de salida de la red TOR.
+    """¿Una IP es un nodo de salida de TOR? Lo contesta Secure-Intel.
 
-    La descarga se hace como mucho una vez por `cache_ttl` **y también como
-    mucho una vez por `RETRY_AFTER_FAILURE_SECONDS` cuando falla**. Esa
-    segunda parte no estaba y era un bug serio: si la descarga fallaba,
-    `_last_fetch` no se actualizaba y la lista quedaba vacía, así que la
-    condición de arriba daba falso SIEMPRE... y como esto se consulta en
-    cada conexión que evalúa el proxy, cada conexión disparaba una descarga
-    nueva. En la PC donde apareció, eso terminó en 1.6 millones de pedidos a
-    check.torproject.org en dos días.
+    ESTA CLASE YA NO DESCARGA NADA, y esa es la parte importante.
 
-    Ahora un intento fallido también cuenta como intento: si no se pudo,
-    se espera un rato antes de volver a probar, en vez de reintentar a
-    la velocidad del tráfico del usuario.
+    Antes bajaba la lista de check.torproject.org por su cuenta, y esa
+    descarga tuvo el peor bug que tuvo este proyecto: si fallaba, la lista
+    quedaba vacía, y la condición de "¿hace falta refrescar?" daba verdadero
+    SIEMPRE. Como esto se consulta en CADA conexión que evalúa el proxy, cada
+    conexión disparaba una descarga nueva. En la PC donde apareció, eso
+    terminó en 1.644.074 pedidos a check.torproject.org en dos días.
+
+    Se arregló en su momento con un fusible de reintentos. Ahora directamente
+    no hace falta: la lista la mantiene Secure-Intel, que la baja una vez cada
+    seis horas pase lo que pase, valida que no haya encogido y avisa si está
+    congelada. Es la fase 2 del punto 8.
+
+    LO QUE NO SE SABE SE DICE
+
+    Si Secure-Intel no está, `is_tor_exit_node` devuelve False y `estado()`
+    dice que no hay lista. No se inventa un "no es TOR" con cara de
+    certeza: esa es exactamente la forma de apagar una detección sin que
+    nadie se entere.
     """
 
-    SOURCE_URL = "https://check.torproject.org/torbulkexitlist"
-
-    # Cuánto esperar antes de reintentar cuando la descarga falló. Corto
-    # comparado con el TTL normal (6hs) -para que una caída pasajera de la
-    # red no deje la detección apagada media tarde- pero infinitamente más
-    # largo que "en cada conexión".
-    RETRY_AFTER_FAILURE_SECONDS = 300
-
     def __init__(self, cache_ttl: int = 21600):
+        # `cache_ttl` se conserva en la firma porque lo pasa `run_proxy.py` y
+        # el config. Ya no hace nada: quien decide cada cuánto refrescar es
+        # Secure-Intel, que lleva la cuenta por fuente.
         self.cache_ttl = cache_ttl
-        self._nodes: set[str] = set()
-        self._last_fetch = 0.0
-        # Instante del último intento, haya salido bien o mal. Es lo que
-        # frena los reintentos en ráfaga.
-        self._last_attempt = 0.0
-        self._lock = threading.Lock()
-
-    def _refresh_if_needed(self) -> None:
-        ahora = time.time()
-        if self._nodes and (ahora - self._last_fetch) < self.cache_ttl:
-            return
-        if (ahora - self._last_attempt) < self.RETRY_AFTER_FAILURE_SECONDS:
-            # Se intentó hace muy poco. Si hubiera funcionado, no estaríamos
-            # acá; así que este es el caso "falló recién": no insistir.
-            return
-
-        # El proxy es multi-thread: sin este candado, cien conexiones
-        # simultáneas largarían cien descargas iguales a la vez.
-        with self._lock:
-            ahora = time.time()
-            if self._nodes and (ahora - self._last_fetch) < self.cache_ttl:
-                return
-            if (ahora - self._last_attempt) < self.RETRY_AFTER_FAILURE_SECONDS:
-                return
-            self._last_attempt = ahora
-            try:
-                # http_client, no requests: esta descarga NO puede salir por
-                # el proxy del sistema, que es este mismo proxy (ver
-                # http_client.py).
-                response = http_client.get(self.SOURCE_URL, timeout=5)
-                response.raise_for_status()
-                self._nodes = {
-                    line.strip() for line in response.text.splitlines() if line.strip()
-                }
-                self._last_fetch = time.time()
-            except requests.RequestException:
-                # Si falla la descarga, seguimos con lo que ya teníamos en
-                # memoria (puede ser un set vacío la primera vez, y no
-                # bloqueamos por eso). El próximo reintento es dentro de
-                # RETRY_AFTER_FAILURE_SECONDS, no en la próxima conexión.
-                pass
+        self._consultas = 0
+        self._sin_datos = 0
 
     def is_tor_exit_node(self, ip: str) -> bool:
-        self._refresh_if_needed()
-        return ip in self._nodes
+        self._consultas += 1
+        resultado = intel_puente.es_tor(ip)
+        if resultado is None:
+            # No se pudo saber. Se cuenta para poder decirlo en el panel, y se
+            # contesta False: no bloquear por falta de datos es lo correcto,
+            # siempre que quede dicho que faltan.
+            self._sin_datos += 1
+            return False
+        return resultado
 
     def estado(self) -> dict:
-        """Para el panel de salud: cuándo se bajó la lista y qué tiene.
-
-        `ultimo_ok` es el instante de la última descarga exitosa (0 si nunca);
-        `ultimo_intento` incluye también los fallidos, y la diferencia entre
-        los dos es justo lo que hay que mirar cuando algo no anda."""
+        """Para el panel de salud. Dice la verdad incluso cuando es fea."""
+        hay = intel_puente.disponible()
         return {
-            "ok": bool(self._nodes),
-            "nodos": len(self._nodes),
-            "ultimo_ok": self._last_fetch,
-            "ultimo_intento": self._last_attempt,
+            "fuente": "Secure-Intel",
+            "disponible": hay,
+            "consultas": self._consultas,
+            "sin_datos": self._sin_datos,
+            "detalle": ("la lista de TOR la mantiene Secure-Intel" if hay else
+                        "no está Secure-Intel: no puedo saber si una IP es de TOR"),
         }
 
 

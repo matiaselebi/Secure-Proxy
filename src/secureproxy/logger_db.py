@@ -98,6 +98,28 @@ class LoggerDB:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_requests_host ON requests (host)"
             )
+            # Los ritmos detectados, guardados. Es la única tabla de este
+            # archivo que no es un registro de lo que pasó sino una
+            # CONCLUSIÓN, y existe por una razón concreta: SecureCenter lee
+            # las bases de los proyectos, no les pide nada por la red. Si el
+            # ritmo se calculara solo cuando alguien abre el panel, Detect no
+            # tendría de dónde sacarlo, y la alternativa sería que SecureCenter
+            # repitiera la cuenta. Repetirla es lo que el punto 8 vino a sacar.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ritmos (
+                    proceso TEXT NOT NULL,
+                    destino TEXT NOT NULL,
+                    visto TEXT NOT NULL,
+                    conexiones INTEGER NOT NULL,
+                    promedio REAL NOT NULL,
+                    coeficiente REAL NOT NULL,
+                    bytes INTEGER NOT NULL DEFAULT 0,
+                    motivo TEXT,
+                    PRIMARY KEY (proceso, destino)
+                )
+                """
+            )
             conn.commit()
 
     def log_request(
@@ -497,97 +519,28 @@ class LoggerDB:
             )
             return cur.fetchall()
 
-    def beaconing(
-        self,
-        horas: int = 24,
-        minimo: int = 8,
-        jitter_maximo: float = 0.20,
-        intervalo_minimo: float = 5.0,
-        intervalo_maximo: float = 7200.0,
-        ocultar: bool = False,
-        tope_candidatos: int = 60,
-    ) -> list[tuple]:
+    def beaconing(self, horas: float = 24, minimo: int = 0,
+                  ocultar: bool = False) -> list[dict]:
         """Destinos a los que se sale con intervalos casi exactos.
 
-        Esto detecta algo distinto de `conexiones_sostenidas`, y la
-        diferencia importa. Aquella mide VOLUMEN, y con eso se agarra un
-        minero: martilla el mismo pool miles de veces. Un implante de
-        comando-y-control hace lo contrario, justamente para no llamar la
-        atención: se conecta poco, a veces una vez por minuto, pero lo hace
-        con una regularidad de reloj porque del otro lado hay un programa
-        preguntando "¿hay órdenes nuevas?".
+        ACÁ NO SE CALCULA NADA. La cuenta vive en `beaconing.py` y este método
+        solo trae las filas y se la pasa. Antes estaban las dos cosas juntas:
+        noventa líneas de SQL más estadística a mano adentro de la clase que
+        administra la base.
 
-        Entonces la señal no es cuánto, es CADA CUÁNTO. Se calculan los
-        intervalos entre conexiones consecutivas y se mira su dispersión
-        relativa (desvío estándar sobre promedio, o "jitter"): un humano
-        navegando da valores altísimos, un programa automático da valores
-        cerca de cero.
+        Eso era el problema del punto 8 en chiquito. Dos lugares que miden el
+        mismo ritmo con umbrales distintos (uno cortaba el jitter en 0.20, el
+        otro en 0.25) es un panel que puede mostrar una fila que un test dice
+        que no existe. Ahora hay un solo umbral y está escrito una sola vez.
 
-        Se descartan a propósito:
-
-        - Los intervalos muy cortos (menos de 5 segundos): eso es una página
-          cargando sus recursos, no un beacon.
-        - Los muy largos (más de 2 horas): con tan pocas muestras, cualquier
-          cosa parece regular.
-        - Los destinos con demasiadas conexiones: si algo se conectó 5.000
-          veces, es volumen y ya lo agarra el otro detector.
-
-        Esto NO bloquea nada: una app de mensajería o un cliente de correo
-        que revisa cada 60 segundos da exactamente la misma firma. Es una
-        lista de "andá a mirar esto", no de culpables.
-
-        Devuelve (host, conexiones, intervalo_promedio_seg, jitter, proceso).
+        Devuelve lo que devuelve `beaconing.analizar`: un diccionario por
+        grupo, con `proceso`, `destino`, `conexiones`, `promedio`,
+        `coeficiente`, `bytes` y `motivo`.
         """
-        from datetime import timedelta
+        from . import beaconing as calculo
 
-        desde = (datetime.now(timezone.utc) - timedelta(hours=horas)).isoformat()
-        filtro, params_ocultos = self._filtro_ocultos(ocultar)
-        y_ademas = f" AND {filtro}" if filtro else ""
-        # Un beacon no hace miles de conexiones: ese es el otro detector.
-        maximo = int(horas * 3600 / intervalo_minimo)
-
-        with self._lock, closing(self._connect()) as conn, conn:
-            candidatos = conn.execute(
-                "SELECT host, COUNT(*) c FROM requests "
-                f"WHERE timestamp >= ?{y_ademas} "
-                "GROUP BY host HAVING c >= ? AND c <= ? "
-                "ORDER BY c DESC LIMIT ?",
-                (desde, *params_ocultos, minimo, maximo, tope_candidatos),
-            ).fetchall()
-
-            resultados = []
-            for host, cantidad in candidatos:
-                filas = conn.execute(
-                    "SELECT timestamp, process FROM requests "
-                    "WHERE host = ? AND timestamp >= ? ORDER BY timestamp ASC",
-                    (host, desde),
-                ).fetchall()
-                momentos = []
-                proceso = ""
-                for marca, proc in filas:
-                    try:
-                        momentos.append(datetime.fromisoformat(str(marca)).timestamp())
-                    except (TypeError, ValueError):
-                        continue
-                    if proc and not proceso:
-                        proceso = proc
-                if len(momentos) < minimo:
-                    continue
-
-                intervalos = [b - a for a, b in zip(momentos, momentos[1:]) if b > a]
-                if len(intervalos) < minimo - 1:
-                    continue
-                promedio = sum(intervalos) / len(intervalos)
-                if not (intervalo_minimo <= promedio <= intervalo_maximo):
-                    continue
-                varianza = sum((x - promedio) ** 2 for x in intervalos) / len(intervalos)
-                jitter = (varianza ** 0.5) / promedio
-                if jitter <= jitter_maximo:
-                    resultados.append((host, cantidad, promedio, jitter, proceso))
-
-        # Lo más regular primero: es lo más sospechoso.
-        resultados.sort(key=lambda fila: fila[3])
-        return resultados
+        filas = self.filas_para_beaconing(horas=horas, ocultar=ocultar)
+        return calculo.analizar(filas, minimo=minimo or calculo.MINIMO_DE_CONEXIONES)
 
     def bloqueos_por_motivo(
         self, limit: int = 10, ocultar: bool = False
@@ -603,3 +556,73 @@ class LoggerDB:
                 (*params, limit),
             )
             return cur.fetchall()
+
+    def filas_para_beaconing(self, horas: float = 24, limite: int = 20000,
+                             ocultar: bool = False) -> list:
+        """El historial crudo que necesita `beaconing.py`: cuándo, a dónde, quién.
+
+        Se traen las conexiones PERMITIDAS y no las bloqueadas, y esa es la
+        parte que importa. Un destino bloqueado ya lo agarró una lista: no hace
+        falta ningún análisis para saber que estaba mal. Lo que este proxy
+        puede contestar y nadie más es qué pasa con lo que **pasó el filtro**:
+        un servidor que ninguna lista conoce, con el que un proceso habla cada
+        sesenta segundos.
+
+        El tope alto es a propósito: el análisis necesita muchas marcas de
+        tiempo para que el ritmo signifique algo, y son filas chicas.
+        """
+        from datetime import timedelta
+
+        desde = (datetime.now(timezone.utc) - timedelta(hours=horas)).isoformat()
+        filtro, params_ocultos = self._filtro_ocultos(ocultar)
+        y_ademas = f" AND {filtro}" if filtro else ""
+        with self._lock, closing(self._connect()) as conn:
+            filas = conn.execute(
+                "SELECT timestamp, host, process, bytes_out, bytes_in "
+                f"FROM requests WHERE blocked = 0 AND timestamp >= ?{y_ademas} "
+                "ORDER BY id DESC LIMIT ?",
+                (desde, *params_ocultos, limite)).fetchall()
+        salida = []
+        for f in filas:
+            # El timestamp está en ISO y el análisis necesita segundos. Se
+            # convierte acá y no allá: `beaconing.py` no tiene por qué saber
+            # cómo guarda las fechas esta base.
+            try:
+                ts = datetime.fromisoformat(f[0]).timestamp()
+            except (TypeError, ValueError):
+                continue
+            salida.append({"ts": ts, "host": f[1] or "", "proceso": f[2] or "",
+                           "bytes_out": f[3] or 0, "bytes_in": f[4] or 0})
+        return salida
+
+    def guardar_ritmos(self, ritmos: list) -> int:
+        """Deja en la base los ritmos detectados, y borra los que ya no están.
+
+        El borrado es la parte importante. Sin él, un destino que dejó de
+        tener ritmo hace tres semanas seguiría en la tabla y Detect seguiría
+        armando incidentes con él: la conclusión quedaría congelada mientras
+        el mundo cambió. Se reemplaza la foto entera, que es lo que es.
+        """
+        with self._lock, closing(self._connect()) as conn, conn:
+            conn.execute("DELETE FROM ritmos")
+            conn.executemany(
+                "INSERT INTO ritmos (proceso, destino, visto, conexiones, "
+                "promedio, coeficiente, bytes, motivo) VALUES (?,?,?,?,?,?,?,?)",
+                [(r.get("proceso", ""), r["destino"],
+                  datetime.now(timezone.utc).isoformat(),
+                  int(r.get("conexiones", 0)), float(r.get("promedio", 0.0)),
+                  float(r.get("coeficiente", 0.0)), int(r.get("bytes", 0)),
+                  r.get("motivo", "")) for r in ritmos])
+            conn.commit()
+        return len(ritmos)
+
+    def actualizar_ritmos(self, horas: float = 24) -> int:
+        """Calcular y guardar. Es lo que corre el bucle de fondo."""
+        return self.guardar_ritmos(self.beaconing(horas=horas, ocultar=True))
+
+    def ritmos(self) -> list[dict]:
+        with self._lock, closing(self._connect()) as conn:
+            conn.row_factory = sqlite3.Row
+            filas = conn.execute(
+                "SELECT * FROM ritmos ORDER BY coeficiente ASC").fetchall()
+        return [dict(f) for f in filas]

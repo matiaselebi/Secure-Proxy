@@ -374,14 +374,14 @@ def historial(tmp_path):
 
 
 def test_encuentra_el_ritmo_de_reloj(historial):
-    hallados = {fila[0]: fila for fila in historial.beaconing(horas=24)}
+    hallados = {f["destino"]: f for f in historial.beaconing(horas=24)}
 
     assert "c2-perfecto.test" in hallados
     assert "c2-con-jitter.test" in hallados
 
 
 def test_no_confunde_navegacion_humana_con_un_implante(historial):
-    hallados = {fila[0] for fila in historial.beaconing(horas=24)}
+    hallados = {f["destino"] for f in historial.beaconing(horas=24)}
 
     assert "noticias.test" not in hallados
 
@@ -389,25 +389,27 @@ def test_no_confunde_navegacion_humana_con_un_implante(historial):
 def test_no_confunde_streaming_con_un_implante(historial):
     """Muchas conexiones muy juntas es volumen, y para eso está el otro
     detector: acá se descarta por intervalo demasiado corto."""
-    hallados = {fila[0] for fila in historial.beaconing(horas=24)}
+    hallados = {f["destino"] for f in historial.beaconing(horas=24)}
 
     assert "video.test" not in hallados
 
 
 def test_informa_el_intervalo_el_jitter_y_el_proceso(historial):
-    fila = next(f for f in historial.beaconing(horas=24) if f[0] == "c2-perfecto.test")
-    _host, cantidad, promedio, jitter, proceso = fila
+    fila = next(f for f in historial.beaconing(horas=24)
+                if f["destino"] == "c2-perfecto.test")
 
-    assert cantidad == 40
-    assert 59 < promedio < 61
-    assert jitter < 0.01
-    assert proceso == "rundll32.exe (PID 99)"
+    assert fila["conexiones"] == 40
+    assert 59 < fila["promedio"] < 61
+    assert fila["coeficiente"] < 0.01
+    assert fila["proceso"] == "rundll32.exe (PID 99)"
+    # Y el motivo, que es lo que hace entendible la pantalla.
+    assert "conexiones cada" in fila["motivo"]
 
 
 def test_lo_mas_regular_va_primero(historial):
     resultados = historial.beaconing(horas=24)
 
-    jitters = [fila[3] for fila in resultados]
+    jitters = [f["coeficiente"] for f in resultados]
     assert jitters == sorted(jitters)
 
 

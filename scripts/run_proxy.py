@@ -21,7 +21,15 @@ PID_FILE = PROJECT_ROOT / "data" / "proxy.pid"
 # solo, sin tener que reiniciar el proceso.
 LIGHT_RELOAD_INTERVAL_SECONDS = 15
 
+# Cada cuánto se recalculan los ritmos de conexión y se dejan guardados. Diez
+# minutos y no un minuto: la ventana que se analiza es de 24 horas, así que
+# recalcular más seguido da casi el mismo resultado y solo gasta CPU. Y no una
+# hora, porque el punto es que SecureCenter lo encuentre razonablemente
+# fresco cuando arma un incidente.
+RITMOS_INTERVAL_SECONDS = 600
+
 import update_blocklist  # noqa: E402
+from secureproxy import alcance  # noqa: E402
 from secureproxy.config_loader import load_config  # noqa: E402
 from secureproxy.filter_engine import FilterEngine  # noqa: E402
 from secureproxy.firewall_rules import FirewallManager  # noqa: E402
@@ -137,6 +145,24 @@ def _maintain_log_db(logger_db: LoggerDB) -> None:
             print("[SecureProxy] base de logs compactada.")
     except Exception as exc:  # noqa: BLE001 - el mantenimiento no debe tumbar el proxy
         print(f"[SecureProxy] no se pudo recortar el historial: {exc}")
+
+
+def _ritmos_loop(logger_db: LoggerDB) -> None:
+    """Recalcula el beaconing cada tanto y lo deja escrito en la base.
+
+    Se guarda en vez de calcularse al abrir el panel porque SecureCenter lee
+    las bases de los proyectos, no les pide nada por la red: si esto viviera
+    solo en la pantalla, Detect no tendría de dónde sacarlo y habría que
+    escribir la cuenta dos veces.
+    """
+    while True:
+        try:
+            cuantos = logger_db.actualizar_ritmos(horas=24)
+            if cuantos:
+                print(f"[SecureProxy] {cuantos} destino(s) con ritmo de reloj.")
+        except Exception as exc:  # noqa: BLE001 - no debe tumbar el proxy
+            print(f"[SecureProxy] no se pudieron calcular los ritmos: {exc}")
+        time.sleep(RITMOS_INTERVAL_SECONDS)
 
 
 def main() -> None:
@@ -258,6 +284,10 @@ def main() -> None:
     PID_FILE.write_text(str(os.getpid()))
 
     print(f"[SecureProxy] escuchando en {cfg.proxy.host}:{cfg.proxy.port}")
+    # Se dice al arrancar y no en el README: un README no se lee cuando el
+    # proceso ya está corriendo. Ver src/secureproxy/alcance.py.
+    if alcance.aviso():
+        print(f"[SecureProxy] OJO: {alcance.aviso()}")
     print(f"[SecureProxy] dashboard: http://{cfg.proxy.host}:{cfg.proxy.dashboard_port}/")
     if cfg.filtering.mode == "audit":
         print("[SecureProxy] modo: AUDIT (registra qué bloquearía, pero deja pasar todo el tráfico)")
@@ -295,6 +325,11 @@ def main() -> None:
         target=_maintain_log_db, args=(logger_db,), daemon=True
     )
     mantenimiento_thread.start()
+
+    ritmos_thread = threading.Thread(
+        target=_ritmos_loop, args=(logger_db,), daemon=True
+    )
+    ritmos_thread.start()
 
     dashboard_thread = threading.Thread(target=dashboard_server.serve_forever, daemon=True)
     dashboard_thread.start()

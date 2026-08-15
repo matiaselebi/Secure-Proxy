@@ -1,16 +1,38 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 venv/
 .venv/
+*.egg-info/
+build/
+dist/
+
+# Tests y herramientas
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+graphify-out/
+
+# Secretos
 .env
+.env.*
+!.env.example
+
+# Estado y feeds descargados
 data/*.db
-data/proxy.pid
+data/*.db-*
+data/*.pid
 data/blocklist_feeds.txt
 data/ip_blocklist_feeds.txt
 data/ip_ranges_feeds.txt
 data/feeds_status.json
 data/tor_exit_nodes_cache.txt
-.pytest_cache/
-*.egg-info/
+*.log
+
+# Editor y Windows
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

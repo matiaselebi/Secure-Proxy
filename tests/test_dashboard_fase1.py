@@ -18,7 +18,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from secureproxy import feeds_status  # noqa: E402
 from secureproxy.filter_engine import FilterEngine  # noqa: E402
 from secureproxy.firewall_rules import FirewallManager  # noqa: E402
 from secureproxy.logger_db import LoggerDB  # noqa: E402
@@ -120,49 +119,62 @@ def test_el_panel_de_salud_muestra_cada_fuente(panel):
     assert "Versión de reglas" in body
 
 
-def test_una_fuente_caida_se_ve_distinta_de_una_sana(tmp_path):
-    """Lo importante del panel es que NO mienta: si una fuente falla tiene
-    que decirlo, y ademas decir de cuando es la lista que esta en uso."""
-    feeds_status.registrar(tmp_path, "URLhaus", True, 500)
-    feeds_status.registrar(tmp_path, "URLhaus", False, error="timeout")
-
-    guardado = feeds_status.leer(tmp_path)["URLhaus"]
-
-    assert guardado["ok"] is False
-    assert "demasiado" in guardado["error"], "el error se cuenta en castellano"
-    assert guardado["ultimo_ok"], "tiene que recordar la ultima descarga buena"
-    assert guardado["entradas"] == 500, "y cuantas reglas hay en uso ahora"
-
-
-def test_urlhaus_y_openphish_se_registran_por_separado(tmp_path):
-    """Las dos escriben en el MISMO archivo de listas, asi que mirando la
-    fecha del archivo una fuente caida quedaria tapada por la otra."""
-    feeds_status.registrar(tmp_path, "URLhaus", True, 1000)
-    feeds_status.registrar(tmp_path, "OpenPhish", False, error="503")
-
-    guardado = feeds_status.leer(tmp_path)
-
-    assert guardado["URLhaus"]["ok"] is True
-    assert guardado["OpenPhish"]["ok"] is False
-
-
-def test_sin_datos_no_inventa_estado(tmp_path):
-    assert feeds_status.leer(tmp_path) == {}
-
-
 def test_abuseipdb_sin_api_key_se_reporta_asi(panel):
     base, _logger, _engine = panel
     _status, body, _ = pedir(base + "/")
     assert "sin API key" in body
 
 
-def test_el_estado_de_tor_distingue_falla_de_apagado():
-    tor = TorExitNodeList()
-    estado = tor.estado()
+def test_un_bloqueo_por_puerto_no_ofrece_una_excepcion_que_no_funciona(panel):
+    base, logger, _engine = panel
+    logger.log_request(
+        "127.0.0.1", "CONNECT", "puerto-invalido.test", 5228, "/", True,
+        reason=("puerto 5228 no permitido para un tunel (solo 80, 443, 8080, 8443): "
+                "un proxy web no deberia ser un canal TCP a cualquier lado"),
+    )
 
-    assert estado["ok"] is False
-    assert estado["nodos"] == 0
-    assert estado["ultimo_ok"] == 0.0
+    _status, body, _ = pedir(base + "/")
+
+    assert 'href="/allow?domain=puerto-invalido.test"' not in body
+    assert "El puerto no se habilita desde la lista blanca" in body
+
+
+def test_la_configuracion_describe_la_delegacion_real_a_securehips(panel):
+    base, _logger, _engine = panel
+
+    _status, body, _ = pedir(base + "/")
+
+    assert "Bloqueo mediante SecureHIPS" in body
+    assert "escribe reglas REALES" not in body
+    assert "quedan puestas aunque apagues el proxy" not in body
+
+
+def test_el_estado_de_tor_dice_si_hay_forma_de_saberlo(monkeypatch):
+    """La lista de TOR ya no la baja el proxy: la mantiene Secure-Intel (fase
+    2 del punto 8). Lo que este test cuida es lo mismo de antes con otra
+    forma: que "no es TOR" y "no tengo forma de saberlo" no se vean igual.
+    Un "no es TOR" inventado es una detección apagada sin que nadie se entere.
+    """
+    from secureproxy import intel_puente
+
+    monkeypatch.setattr(intel_puente, "disponible", lambda raiz=None: False)
+    estado = TorExitNodeList().estado()
+    assert estado["disponible"] is False
+    assert "no puedo saber" in estado["detalle"]
+
+    monkeypatch.setattr(intel_puente, "disponible", lambda raiz=None: True)
+    assert TorExitNodeList().estado()["disponible"] is True
+
+
+def test_sin_intel_no_se_afirma_que_una_ip_no_es_de_tor(monkeypatch):
+    """Contesta False para no bloquear por falta de datos, pero lo CUENTA:
+    ese contador es lo que hace que la falta se pueda ver en el panel."""
+    from secureproxy import intel_puente
+
+    monkeypatch.setattr(intel_puente, "es_tor", lambda ip, raiz=None: None)
+    tor = TorExitNodeList()
+    assert tor.is_tor_exit_node("203.0.113.9") is False
+    assert tor.estado()["sin_datos"] == 1
 
 
 # ---------------- historial, detalle y buscador ----------------
@@ -341,20 +353,33 @@ def test_sin_estado_por_fuente_usa_la_fecha_del_archivo(tmp_path, monkeypatch):
     finally:
         server.shutdown()
 
-    assert "lista cargada" in body, "tendria que apoyarse en la fecha del archivo"
+    # Desde la fase 2 del punto 8 el estado POR FUENTE lo lleva Secure-Intel.
+    # Lo que sigue contestando este panel, y es lo que se pregunta de verdad,
+    # es cuándo se actualizó lo que este proxy está usando: eso sale de la
+    # fecha del archivo, y sigue siendo una respuesta de verdad y no un
+    # "nunca" por omisión.
     assert "Última sincronización" in body
     assert "nunca" not in body.split("Última sincronización")[1][:120]
 
 
 def test_sin_listas_ni_estado_dice_que_hacer(panel, tmp_path, monkeypatch):
-    """Y cuando de verdad no hay nada, que no deje al usuario adivinando."""
+    """Y cuando de verdad no hay nada, que no deje al usuario adivinando.
+
+    Lo que hay que hacer cambió con la fase 2 del punto 8: antes era "corré
+    actualizar listas"; ahora es "cloná Secure-Intel", porque es el único que
+    baja. El test cuida lo mismo de siempre: que el panel diga QUÉ hacer y no
+    solo que algo falta.
+    """
     import secureproxy.config_loader as cl
+    from secureproxy import intel_puente
 
     monkeypatch.setattr(cl, "PROJECT_ROOT", tmp_path / "vacio")
+    monkeypatch.setattr(intel_puente, "disponible", lambda raiz=None: False)
     base, _logger, _engine = panel
     _status, body, _ = pedir(base + "/")
 
-    assert "Actualizar listas" in body
+    assert "falta Secure-Intel" in body
+    assert "carpeta hermana" in body
 
 
 # ---------------- exportar y sincronizar ----------------
@@ -430,30 +455,6 @@ def test_sin_api_key_el_panel_dice_como_arreglarlo(panel):
 
     assert "sin API key" in body
     assert "ABUSEIPDB_API_KEY" in body and ".env" in body
-
-
-def test_los_errores_de_descarga_se_cuentan_en_castellano(tmp_path):
-    """Un fallo viene con 300 caracteres de traza de la libreria. Volcado tal
-    cual en el panel es ilegible y no ayuda a decidir que hacer."""
-    crudo = (
-        "HTTPSConnectionPool(host='urlhaus.abuse.ch', port=443): Max retries "
-        "exceeded with url: /downloads/hostfile/ (Caused by SSLError("
-        "SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] ...')))"
-    )
-    feeds_status.registrar(tmp_path, "URLhaus", False, error=crudo)
-
-    guardado = feeds_status.leer(tmp_path)["URLhaus"]["error"]
-
-    assert len(guardado) < 100
-    assert "certificado" in guardado
-    assert "HTTPSConnectionPool" not in guardado
-
-
-def test_cada_tipo_de_falla_dice_algo_distinto():
-    assert "DNS" in feeds_status.resumir_error("getaddrinfo failed")
-    assert "internet" in feeds_status.resumir_error("Connection refused")
-    assert "demasiado" in feeds_status.resumir_error("Read timed out")
-    assert "429" in feeds_status.resumir_error("HTTP 429 Too Many Requests")
 
 
 # ---------------- actualizacion en vivo (SSE) ----------------
@@ -575,3 +576,23 @@ def test_el_canal_se_anuncia_como_stream_de_eventos(panel):
     assert "text/event-stream" in recibido
     assert "no-cache" in recibido
     assert "data: " in recibido, "el primer evento sale enseguida, sin esperar cambios"
+
+
+# --------------------------------------------------------------------------
+# Los tests de `feeds_status` se fueron con el módulo (fase 2 del punto 8).
+#
+# Ese módulo llevaba el estado de descarga de cada feed y alimentaba una
+# sección del panel de salud. Era, en el fondo, un SEGUNDO panel de salud de
+# feeds: decía lo mismo que el de Secure-Intel pero con menos datos (no sabe
+# si un feed está congelado, que es el modo de falla que importa) y con la
+# posibilidad de contradecirlo.
+#
+# Dos paneles que dicen lo mismo terminan diciendo cosas distintas.
+
+
+def test_el_panel_apunta_a_secure_intel_para_la_salud_de_los_feeds(panel):
+    """Lo que queda: una fila que dice quién se ocupa de los feeds."""
+    base, _logger, _engine = panel
+    _status, body, _ = pedir(base + "/")
+    assert "Feeds de amenazas" in body
+    assert "Secure-Intel" in body

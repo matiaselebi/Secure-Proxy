@@ -84,7 +84,7 @@ dashboard:
   # Siguen guardados y siguen contados: el panel te dice cuántas conexiones
   # está ocultando, buscar un dominio ignora este filtro a propósito, y el
   # botón de la pestaña Configuración lo apaga sin reiniciar.
-  hide_noise: false
+  hide_noise: true
   noisy_domains_path: "data/noisy_domains.txt"
 
 # Avisos en el escritorio del sistema. No depende de ningún servicio externo

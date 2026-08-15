@@ -377,6 +377,38 @@ def test_un_dominio_que_apunta_adentro_tampoco_pasa(tmp_path, monkeypatch):
     assert "interna" in decision.reason
 
 
+def test_la_allowlist_no_saltea_la_proteccion_de_la_red_interna(tmp_path, monkeypatch):
+    """Permitir un nombre no debe convertir el proxy en un pivote hacia la LAN.
+
+    La excepción de dominio gana sobre las fuentes de reputación, pero no sobre
+    la barrera de destinos internos. Esa barrera solo se afloja con la opción
+    explícita ``allow_internal_destinations``.
+    """
+    import secureproxy.filter_engine as fe
+
+    engine = _motor(tmp_path)
+    engine.allowlist.add_and_reload("permitido.test")
+    monkeypatch.setattr(fe, "resolve_host_to_ip", lambda host: "127.0.0.1")
+
+    decision = engine.evaluate("permitido.test")
+
+    assert decision.blocked is True
+    assert "interna" in decision.reason
+
+
+def test_la_excepcion_explicita_de_red_interna_sigue_funcionando(tmp_path, monkeypatch):
+    import secureproxy.filter_engine as fe
+
+    engine = _motor(tmp_path, allow_internal_destinations=True)
+    engine.allowlist.add_and_reload("panel-casero.test")
+    monkeypatch.setattr(fe, "resolve_host_to_ip", lambda host: "192.168.1.20")
+
+    decision = engine.evaluate("panel-casero.test")
+
+    assert decision.blocked is False
+    assert decision.resolved_ip == "192.168.1.20"
+
+
 def test_se_puede_permitir_a_proposito(tmp_path):
     """Quien quiera proxear algo de su propia red tiene que poder."""
     engine = _motor(tmp_path, allow_internal_destinations=True)
@@ -447,18 +479,21 @@ def test_la_lista_de_rangos_se_publica_de_una_sola_vez(tmp_path):
     assert lista.is_blocked("9.9.9.9") is False
 
 
-def test_el_firewall_en_dry_run_no_da_por_bloqueado_lo_que_no_bloqueo():
+def test_el_firewall_apagado_no_da_por_pedido_lo_que_no_pidio():
     """El usuario apretaba "Activar" en el panel y justamente las IPs
     reincidentes -las que lo motivaron a activarlo- nunca recibían regla,
-    porque el dry-run ya las había anotado como bloqueadas."""
+    porque el modo apagado ya las había anotado.
+
+    Desde la fase 2 del punto 8 el proxy no escribe reglas: le PIDE a
+    SecureHIPS. Pero el bug de fondo es el mismo y el test sigue cuidándolo:
+    anotar como hecho algo que no se hizo."""
     fw = FirewallManager(enabled=False)
     fw.block_ip("1.2.3.4")
 
     fw.enabled = True
-    comando = fw.block_ip("1.2.3.4")
+    salida = fw.block_ip("1.2.3.4")
 
-    assert "ya bloqueada" not in comando
-    assert "1.2.3.4" in comando
+    assert "ya se le pidió" not in salida
 
 
 def test_el_firewall_no_arma_comandos_con_lo_que_no_es_una_IP():
@@ -544,56 +579,6 @@ def test_el_modo_audit_se_ve_en_el_panel(tmp_path):
 
 
 # ================= feeds =================
-
-
-def test_un_feed_que_devuelve_html_no_destruye_la_lista(tmp_path):
-    """Un portal cautivo de wifi o una página de mantenimiento responden 200
-    con HTML. Los parsers sacaban basura, y como el conjunto no quedaba
-    vacío, la lista buena se sobreescribía: de 40.000 dominios a 3 líneas de
-    HTML, con el panel de salud informando "OK"."""
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    import update_blocklist as ub
-
-    lista = tmp_path / "dominios.txt"
-    ub._write_list(lista, {f"malo{i}.com" for i in range(1000)}, "prueba")
-    assert ub._entradas_previas(lista) == 1000
-
-    basura = {'lang="en">', 'bgcolor="white">', "html>"}
-    guardado = ub._guardar_si_tiene_sentido(lista, basura, ub._es_dominio, "x", "dominios")
-
-    assert guardado is False
-    assert ub._entradas_previas(lista) == 1000
-
-
-def test_una_caida_brusca_de_entradas_tampoco_pisa_la_lista(tmp_path):
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    import update_blocklist as ub
-
-    lista = tmp_path / "dominios.txt"
-    ub._write_list(lista, {f"malo{i}.com" for i in range(1000)}, "prueba")
-
-    guardado = ub._guardar_si_tiene_sentido(
-        lista, {"uno.com", "dos.com"}, ub._es_dominio, "x", "dominios")
-
-    assert guardado is False
-    assert ub._entradas_previas(lista) == 1000
-
-
-def test_un_feed_sano_si_se_guarda(tmp_path):
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    import update_blocklist as ub
-
-    lista = tmp_path / "dominios.txt"
-    ub._write_list(lista, {f"malo{i}.com" for i in range(1000)}, "prueba")
-
-    guardado = ub._guardar_si_tiene_sentido(
-        lista, {f"nuevo{i}.com" for i in range(1200)}, ub._es_dominio, "x", "dominios")
-
-    assert guardado is True
-    assert ub._entradas_previas(lista) == 1200
-
-
-# ================= el .bat =================
 
 
 def test_agregar_un_dominio_desde_el_bat_no_ejecuta_codigo(tmp_path, capsys):
@@ -698,3 +683,33 @@ def test_una_respuesta_grande_no_se_carga_entera_en_memoria(tmp_path):
     # y el volumen quedó bien contado
     filas = logger.buscar(solo_bloqueadas=False, limit=5)
     assert any(f["bytes_in"] == tamanio for f in filas)
+
+
+# --------------------------------------------------------------------------
+# Las tres guardas de descarga que se probaban acá (que un feed que devuelve
+# HTML no pise la lista buena, que una caída brusca de entradas tampoco, y que
+# un feed sano sí se guarde) se mudaron a Secure-Intel junto con el código de
+# descarga. Fase 2 del punto 8.
+#
+# No se perdieron: allá están más completas. Secure-Intel además detecta feeds
+# CONGELADOS (200 OK con los mismos bytes durante días), que es el modo de
+# falla que este proyecto no sabía ver y que se parece muchísimo a estar bien.
+
+
+def test_el_proxy_ya_no_tiene_guardas_de_descarga_porque_no_descarga():
+    """El test que reemplaza a los tres: lo que se sacó, se sacó entero.
+
+    Media medida sería peor que nada: un `update_blocklist` que a veces baja y
+    a veces delega es un lugar más donde puede quedar una URL vieja.
+    """
+    import ast
+
+    from pathlib import Path as _P
+
+    fuente = (_P(__file__).resolve().parent.parent / "scripts" /
+              "update_blocklist.py").read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    funciones = {n.name for n in ast.walk(arbol)
+                 if isinstance(n, ast.FunctionDef)}
+    # Quedó una sola función, y es la que delega.
+    assert funciones == {"main"}

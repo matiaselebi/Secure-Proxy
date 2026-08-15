@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 import requests
 
-from . import feeds_status
+from . import intel_puente
 from .filter_engine import FilterDecision, FilterEngine
 from .firewall_rules import FirewallManager
 from .logger_db import LoggerDB
@@ -1310,11 +1310,11 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             "enforce te deja sin internet al instante. ¿Seguro?"
         )
         aviso_fw = (
-            "¿Desactivar el bloqueo por firewall? (las reglas ya escritas siguen puestas)"
+            "¿Dejar de pedirle bloqueos de IP a SecureHIPS?"
             if fw else
-            "OJO: esto escribe reglas REALES en el firewall de Windows contra las "
-            "IPs bloqueadas, y quedan puestas aunque apagues el proxy."
-            + salto + salto + "¿Activarlo igual?"
+            "SecureProxy le pedirá a SecureHIPS que evalúe las IPs bloqueadas. "
+            "SecureHIPS seguirá siendo el único dueño del firewall."
+            + salto + salto + "¿Activar los pedidos?"
         )
 
         aviso_avisos = (
@@ -1409,12 +1409,13 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     avisa nada.</p>
     {interruptor("alerts_enabled", avisos, "Activar", "Desactivar", aviso_avisos)}
 
-    <h2>Bloqueo por firewall real</h2>
-    <p class="hint">Además de cortar la conexión, escribe reglas REALES en el
-    firewall del sistema contra esa IP. Es potente pero invasivo: las reglas
-    quedan puestas aunque apagues el proxy. Dejalo desactivado salvo que sepas
-    lo que hacés.</p>
-    {interruptor("firewall_enabled", fw, "Activar (con cuidado)", "Desactivar", aviso_fw)}
+    <h2>Bloqueo mediante SecureHIPS</h2>
+    <p class="hint">Además de cortar la conexión, SecureProxy puede pedirle a
+    SecureHIPS que evalúe el bloqueo de esa IP. SecureProxy no escribe reglas:
+    SecureHIPS sigue siendo el único dueño del firewall y aplica su política,
+    vencimiento y lista blanca. Si SecureHIPS no está configurado o no responde,
+    no se crea ninguna regla local.</p>
+    {interruptor("firewall_enabled", fw, "Activar pedidos", "Desactivar", aviso_fw)}
 
     <h2>Lo que se cambia desde el archivo</h2>
     <p class="hint">Estas opciones necesitan reiniciar el proxy, así que viven
@@ -1795,6 +1796,17 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             # cual se conectó sigue completo en el detalle de arriba y en la
             # base: acá se saca un prefijo que se repite en media pantalla.
             visible = limpiar_para_mostrar(host)
+            motivo = str(fila["reason"] or "")
+            if "no permitido para un tunel" in motivo:
+                accion_permitir = (
+                    " <span class='hint'>El puerto no se habilita desde la lista blanca</span>"
+                )
+            else:
+                accion_permitir = (
+                    f" &middot; <a href=\"/allow?domain={quote(host)}\" "
+                    f"data-dominio='{html_lib.escape(visible)}' "
+                    f"onclick=\"return confirmarAccion(this, 'permitir')\">Permitir</a>"
+                )
             partes.append(
                 f"<tr><td>{html_lib.escape(formatear_fecha(fila['timestamp']))}</td>"
                 f"<td title='{html_lib.escape(host)}'>{html_lib.escape(visible)}</td>"
@@ -1803,9 +1815,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                 f"<td>{html_lib.escape(str(fila['reason'] or '-'))}</td>"
                 f"<td class='acciones'>"
                 f"<a href=\"javascript:void(0)\" onclick=\"verDetalle('{detalle_id}')\">Detalle</a>"
-                f" &middot; <a href=\"/allow?domain={quote(host)}\" "
-                f"data-dominio='{html_lib.escape(visible)}' "
-                f"onclick=\"return confirmarAccion(this, 'permitir')\">Permitir</a>"
+                f"{accion_permitir}"
                 f"</td></tr>"
                 f"<tr id='{detalle_id}' class='detalle-fila'><td colspan='6'>"
                 f"<div class='salud'>{detalle}</div></td></tr>"
@@ -1878,61 +1888,26 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                 f"<span class='salud-estado {clase}'>{icono} {html_lib.escape(estado)}</span>{extra}</div>"
             )
 
-        # Feeds de descarga (URLhaus, OpenPhish, Feodo Tracker).
-        guardado = feeds_status.leer(PROJECT_ROOT / "data")
+        # Salud de los feeds: la muestra Secure-Intel, que es el único que
+        # los baja desde la fase 2 del punto 8.
+        #
+        # Acá había 55 líneas que leían un estado por fuente escrito por el
+        # propio proxy, con un respaldo que miraba la fecha del archivo. Todo
+        # eso era, en el fondo, un segundo panel de salud de feeds: uno que
+        # decía lo mismo que el de Secure-Intel pero con menos datos (no sabe
+        # si un feed está CONGELADO, que es el modo de falla que importa) y
+        # con la posibilidad de contradecirlo.
+        #
+        # Dos paneles que dicen lo mismo terminan diciendo cosas distintas. Se
+        # dejó uno solo, y desde acá se apunta a él.
+        hay_intel = intel_puente.disponible()
+        fila("Feeds de amenazas",
+             hay_intel,
+             "los baja y vigila Secure-Intel" if hay_intel
+             else "falta Secure-Intel: nadie está actualizando las listas",
+             "su panel está en el puerto 8893" if hay_intel
+             else "cloná secure-intel como carpeta hermana")
         ultima_sync = ""
-
-        # Respaldo para cuando todavía no hay estado por fuente: la fecha del
-        # archivo de listas. Pasa en toda instalación que ya venía andando de
-        # antes de que esta pantalla existiera -las listas están ahí y son
-        # válidas, pero nadie anotó de dónde salió cada una-. Decir "sin
-        # datos" ahí sería mentir por omisión: lo honesto es mostrar que la
-        # lista está cargada y aclarar que el detalle por fuente aparece
-        # desde la próxima actualización.
-        def rutas_de(lista) -> list:
-            # ip_blocklist y allowlist son opcionales en el motor: el panel no
-            # puede asumir que están.
-            return list(getattr(lista, "paths", []) or [])
-
-        archivos = {
-            "URLhaus": rutas_de(self.filter_engine.blocklist),
-            "OpenPhish": rutas_de(self.filter_engine.blocklist),
-            "Feodo Tracker": rutas_de(self.filter_engine.ip_blocklist),
-        }
-
-        def fecha_del_archivo(nombre: str) -> float:
-            for ruta in archivos.get(nombre, []):
-                try:
-                    if ruta.exists() and "feeds" in ruta.name:
-                        return ruta.stat().st_mtime
-                except OSError:
-                    continue
-            return 0.0
-
-        # FireHOL entraba en feeds_status pero no se mostraba: una caída
-        # sostenida de esa fuente era justamente el caso que este panel dice
-        # cubrir, y pasaba invisible.
-        for nombre in ("URLhaus", "OpenPhish", "Feodo Tracker", "FireHOL"):
-            datos = guardado.get(nombre)
-            if not datos:
-                mtime = fecha_del_archivo(nombre)
-                if mtime:
-                    fila(nombre, True, f"lista cargada {hace_cuanto(mtime)}",
-                         "el estado por fuente se registra desde la próxima actualización")
-                else:
-                    fila(nombre, False, "sin datos",
-                         "corré 'Actualizar listas' (opción 4 del panel .bat)")
-                continue
-            ok = bool(datos.get("ok"))
-            cuando = hace_cuanto(datos.get("ultimo_ok"))
-            entradas = datos.get("entradas", 0)
-            if ok:
-                fila(nombre, True, f"OK {cuando}", f"{entradas:,} reglas".replace(",", ".")
-                     if entradas != 1 else "1 regla")
-            else:
-                fila(nombre, False, "falló", f"última buena {cuando}: {datos.get('error', '')}")
-            if datos.get("ultimo_ok", "") > ultima_sync:
-                ultima_sync = datos.get("ultimo_ok", "")
 
         # AbuseIPDB: sin key, circuito abierto, o funcionando.
         abuse = self.filter_engine.abuseipdb_client.estado()
@@ -1943,16 +1918,18 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         else:
             fila("AbuseIPDB", False, abuse["motivo"], abuse.get("ayuda", ""))
 
-        # TOR: lista en memoria, se baja sola cada 6 horas.
+        # TOR: la lista ya no la baja el proxy, la mantiene Secure-Intel.
+        # Ver el punto 8 del roadmap: el proxy dejó de bajar feeds.
         tor = self.filter_engine.tor_list.estado()
         if not self.filter_engine.check_tor_exit_nodes:
             fila("Lista de nodos TOR", False, "desactivado", "se puede activar en Configuración")
-        elif tor["ok"]:
-            fila("Lista de nodos TOR", True, f"OK {hace_cuanto(tor['ultimo_ok'])}",
-                 f"{tor['nodos']:,} nodos".replace(",", "."))
+        elif tor["disponible"]:
+            fila("Lista de nodos TOR", True, "la mantiene Secure-Intel",
+                 f"{tor['consultas']} consultas")
         else:
-            fila("Lista de nodos TOR", False, "sin lista",
-                 f"último intento {hace_cuanto(tor['ultimo_intento'])}")
+            # "No es TOR" y "no tengo forma de saberlo" no se pueden ver igual.
+            fila("Lista de nodos TOR", False, "sin Secure-Intel",
+                 "no puedo saber si una IP es de TOR; cloná Secure-Intel al lado")
 
         alertas = getattr(self, "alertas", None)
         if alertas is not None:
@@ -1968,9 +1945,19 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
         reglas = len(self.filter_engine.blocklist._domains)
         if not ultima_sync:
-            # Sin estado por fuente, la fecha del archivo de listas es la
-            # mejor respuesta disponible, y es una respuesta de verdad.
-            respaldo = max((fecha_del_archivo(n) for n in archivos), default=0.0)
+            # La fecha del archivo de listas. Es la mejor respuesta disponible
+            # desde que el estado por fuente lo lleva Secure-Intel, y es una
+            # respuesta de verdad: dice cuándo se actualizó lo que este proxy
+            # está usando de verdad, que es lo que se está preguntando.
+            respaldo = 0.0
+            for lista in (self.filter_engine.blocklist,
+                          self.filter_engine.ip_blocklist):
+                for ruta in (getattr(lista, "paths", []) or []):
+                    try:
+                        if ruta.exists() and "feeds" in ruta.name:
+                            respaldo = max(respaldo, ruta.stat().st_mtime)
+                    except OSError:
+                        continue
             if respaldo:
                 from datetime import datetime as _dt
 
@@ -2081,13 +2068,15 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         filas = self.logger_db.beaconing(horas=24, ocultar=self._ocultar_ruido())
         encabezado = (
             "<h2>Conexiones con ritmo de reloj (posible C2)</h2>"
-            "<p class='hint'>Destinos con los que se habla a intervalos casi "
-            "exactos. Una persona navegando nunca da esto; un programa "
+            "<p class='hint'>Destinos con los que un proceso habla a intervalos "
+            "casi exactos. Una persona navegando nunca da esto; un programa "
             "preguntando \"¿hay órdenes nuevas?\" da exactamente esto. Es la "
             "firma de un implante de comando-y-control, y también la de un "
             "cliente de correo o de mensajería revisando cada tanto, así que "
-            "acá no se bloquea nada: mirá el proceso de la última columna, "
-            "que es lo que te dice cuál de las dos cosas es.</p>"
+            "acá no se bloquea nada: mirá el proceso, que es lo que te dice "
+            "cuál de las dos cosas es. Se agrupa por proceso Y destino: dos "
+            "programas hablando con el mismo servidor son dos historias, y "
+            "mezclarlas rompe el ritmo que se está buscando.</p>"
         )
         if not filas:
             return encabezado + (
@@ -2095,19 +2084,21 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                 "regular en las últimas 24 horas.</p>"
             )
         cuerpo = "".join(
-            f"<tr><td title='{html_lib.escape(str(host))}'>"
-            f"{html_lib.escape(limpiar_para_mostrar(str(host)))}</td>"
-            f"<td>{cantidad}</td>"
-            f"<td>cada {_intervalo_legible(promedio)}</td>"
-            f"<td>{jitter * 100:.1f}%</td>"
-            f"<td class='proceso'>{html_lib.escape(proceso or '-')}</td>"
-            f"<td><a href=\"/osint?osint={quote(str(host))}\">Investigar</a></td></tr>"
-            for host, cantidad, promedio, jitter, proceso in filas
+            f"<tr><td title='{html_lib.escape(str(f['destino']))}'>"
+            f"{html_lib.escape(limpiar_para_mostrar(str(f['destino'])))}</td>"
+            f"<td>{f['conexiones']}</td>"
+            f"<td>cada {_intervalo_legible(f['promedio'])}</td>"
+            f"<td>{f['coeficiente'] * 100:.1f}%</td>"
+            f"<td>{formatear_bytes(f.get('bytes', 0))}</td>"
+            f"<td class='proceso'>{html_lib.escape(f['proceso'] or '-')}</td>"
+            f"<td><a href=\"/osint?osint={quote(str(f['destino']))}\">Investigar</a></td></tr>"
+            for f in filas
         )
         return (
             encabezado
             + "<table><tr><th>Destino</th><th>Conexiones</th><th>Cada</th>"
-            f"<th>Variación</th><th>Proceso</th><th></th></tr>{cuerpo}</table>"
+            "<th>Variación</th><th>Transferido</th><th>Proceso</th><th></th></tr>"
+            f"{cuerpo}</table>"
         )
 
     def _render_volumen(self) -> str:

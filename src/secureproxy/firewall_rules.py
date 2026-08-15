@@ -1,91 +1,89 @@
-"""Generación (y opcionalmente ejecución) de reglas de firewall de bloqueo dinámico.
+"""Pedirle un bloqueo a SecureHIPS. Ya no se escribe ninguna regla acá.
 
-Detecta el sistema operativo: usa `iptables` en Linux (Kali, etc.) y
-`netsh advfirewall` en Windows. Por defecto solo genera el comando y lo
-loguea (dry-run); si `enabled=True` en la config, lo ejecuta de verdad con
-subprocess (requiere permisos de administrador/root en ambos casos).
+QUÉ PASÓ CON ESTE ARCHIVO
+
+Tenía código que armaba un `netsh advfirewall` o un `iptables` y lo ejecutaba.
+Funcionaba. Se borró igual, y el motivo es la regla número uno de la suite:
+**un solo dueño del firewall**.
+
+Dos programas escribiendo reglas es un firewall que nadie puede auditar ni
+limpiar. Y era peor que eso: las reglas que ponía este archivo no vencían, no
+consultaban tu lista blanca y no quedaban registradas como bloqueos. Una IP
+bloqueada por error a las tres de la mañana seguía bloqueada en marzo, sin
+ninguna fila en ninguna base que dijera por qué.
+
+SecureHIPS ya tiene todo eso construido y probado: vencimiento, escalera de
+duraciones, lista blanca, país, motivo y un botón para levantarla. Así que el
+proxy pide y el HIPS decide. Ver el ADR 0006 de SecureHIPS.
+
+QUÉ PASA SI EL HIPS NO ESTÁ
+
+No se bloquea, y **se dice**. Antes había un camino de respaldo que escribía la
+regla local, y ese camino era justamente el problema: hacía que el firewall
+tuviera dos dueños cada vez que el HIPS estaba apagado, que es cuando menos se
+mira. Ahora la respuesta es honesta ("no bloqueé nada porque el que bloquea no
+está"), se ve en el panel, y se arregla prendiendo el HIPS.
+
+Es la fase 2 del punto 8: borrarle a SecureProxy todo lo que ahora hacen
+otros. Lo que queda no toca el sistema.
 """
 
 import ipaddress
-import platform
-import subprocess
 import threading
 
 
 class FirewallManager:
-    def __init__(self, enabled: bool = False, hips=None):
-        self.enabled = enabled
-        self.system = platform.system()  # "Windows", "Linux", "Darwin"
-        self._already_blocked_ips: set[str] = set()
-        self._lock = threading.Lock()
-        # Cliente de SecureHIPS. Si está configurado y contesta, el bloqueo lo
-        # pone él y acá no se escribe ninguna regla. Ver `hips_client.py`: el
-        # HIPS tiene vencimiento, lista blanca y registro; esta clase no.
-        self.hips = hips
+    """Le pide bloqueos a SecureHIPS. No escribe reglas.
 
-    def build_block_command(self, ip: str) -> list[str]:
-        if self.system == "Windows":
-            rule_name = f"SecureProxy_Block_{ip.replace('.', '_')}"
-            return [
-                "netsh", "advfirewall", "firewall", "add", "rule",
-                f"name={rule_name}", "dir=out", "action=block",
-                f"remoteip={ip}",
-            ]
-        # Linux (Kali, etc.)
-        return ["iptables", "-A", "OUTPUT", "-d", ip, "-j", "DROP"]
+    Se mantiene el nombre de la clase aunque ya no administre ningún firewall:
+    la usan el servidor y el panel, y renombrarla sería un cambio de
+    superficie que no aporta nada. Lo que cambió es lo que hace adentro.
+    """
+
+    def __init__(self, enabled: bool = False, hips=None):
+        # `enabled` ya no habilita escribir reglas: habilita PEDIRLAS. Se
+        # conserva para que el interruptor del panel siga significando lo
+        # mismo desde afuera: "¿esto puede terminar en un bloqueo real?".
+        self.enabled = enabled
+        self.hips = hips
+        self._pedidos: set[str] = set()
+        self._lock = threading.Lock()
+
+    def disponible(self) -> bool:
+        """¿Hay alguien del otro lado que pueda bloquear de verdad?"""
+        return self.hips is not None and bool(
+            getattr(self.hips, "configurado", lambda: False)())
 
     def block_ip(self, ip: str) -> str:
-        """Devuelve el comando (como string) que se generó o ejecutó.
+        """Pide el bloqueo. Devuelve qué pasó, en una frase para mostrar.
 
-        Se valida que `ip` sea realmente una dirección antes de armar nada.
-        Hoy siempre llega de `gethostbyname`, así que no hay por dónde
-        colarse, pero esta función construye una línea de comando: si mañana
-        alguien la llama desde el panel, el chequeo ya está puesto.
+        Nunca lanza y nunca toca el sistema. Lo peor que puede devolver es
+        "no lo bloqueé", que es una respuesta honesta y no un silencio.
         """
         try:
             ipaddress.ip_address(ip)
         except ValueError:
-            return f"(no es una IP valida: {ip})"
-
-        # Primero se le pregunta a SecureHIPS. Si lo toma, acá no se escribe
-        # nada: un bloqueo puesto por los dos lados es una regla duplicada que
-        # el HIPS no va a poder levantar cuando venza, porque la otra no es
-        # suya. Ver ADR 0006 en SecureHIPS.
-        #
-        # Ojo con el orden: esto va ANTES del set de ya-bloqueadas a propósito.
-        # Ese set es la memoria de las reglas que escribió ESTA clase; las que
-        # pone el HIPS las recuerda el HIPS, que además sabe cuándo vencen.
-        if self.hips is not None and getattr(self.hips, "configurado", bool)():
-            tomado, detalle = self.hips.bloquear(ip, motivo="conexión saliente bloqueada")
-            if tomado:
-                return detalle
-            # No lo tomó: seguimos como siempre. La herramienta no puede
-            # quedarse sin bloquear porque la otra esté apagada.
-
-        with self._lock:
-            if ip in self._already_blocked_ips:
-                return f"(ya bloqueada previamente: {ip})"
-            # Solo se anota cuando la regla se escribió DE VERDAD. Antes se
-            # anotaba también en dry-run, y eso tenía una consecuencia fea:
-            # el usuario apretaba "Activar" en el panel y justamente las IPs
-            # reincidentes -las que lo motivaron a activarlo- nunca recibían
-            # regla, porque figuraban como ya bloqueadas.
-            if self.enabled:
-                self._already_blocked_ips.add(ip)
-
-        command = self.build_block_command(ip)
-        command_str = " ".join(command)
+            # Se valida aunque hoy la IP siempre venga de `gethostbyname`: es
+            # un dato que viaja a otro proceso por la red.
+            return f"(no es una IP válida: {ip})"
 
         if not self.enabled:
-            return command_str
+            return f"(bloqueo desactivado; se habría pedido el de {ip})"
 
-        try:
-            subprocess.run(command, check=True, capture_output=True, timeout=30)
-        except (subprocess.CalledProcessError, FileNotFoundError,
-                subprocess.TimeoutExpired, OSError) as exc:
+        if not self.disponible():
+            # Antes acá se escribía una regla local. Eso es exactamente lo que
+            # se sacó: el respaldo hacía que el firewall tuviera dos dueños
+            # justo cuando el HIPS estaba apagado, que es cuando menos se mira.
+            return ("no bloqueé nada: SecureHIPS no está configurado o no "
+                    "responde, y es el único que escribe en el firewall")
+
+        with self._lock:
+            if ip in self._pedidos:
+                return f"(ya se le pidió a SecureHIPS: {ip})"
+
+        tomado, detalle = self.hips.bloquear(
+            ip, motivo="conexión saliente bloqueada")
+        if tomado:
             with self._lock:
-                # No quedó puesta: que se pueda reintentar.
-                self._already_blocked_ips.discard(ip)
-            return f"ERROR ejecutando '{command_str}': {exc}"
-
-        return command_str
+                self._pedidos.add(ip)
+        return detalle

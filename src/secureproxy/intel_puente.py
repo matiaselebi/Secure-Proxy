@@ -88,3 +88,39 @@ def actualizar(forzar: bool = False, raiz=None) -> bool:
         print(f"[SecureProxy] Secure-Intel: no pudo con {', '.join(fallaron)} "
               "(se dejaron los datos anteriores)")
     return True
+
+
+def es_tor(ip: str, raiz=None) -> bool | None:
+    """¿Esa IP es un nodo de salida de TOR, según Secure-Intel?
+
+    Devuelve None si no se pudo saber (Secure-Intel no está o su base no se
+    puede leer). None y False son cosas distintas y quien llame tiene que
+    distinguirlas: "no es TOR" y "no tengo forma de saberlo" no se pueden
+    tratar igual, porque lo segundo con cara de lo primero es exactamente
+    cómo se apaga una detección sin que nadie se entere.
+
+    Antes esta lista la bajaba el proxy solo, y esa descarga tuvo el peor bug
+    de la historia del proyecto: cuando fallaba, la lista quedaba vacía y la
+    condición de refresco daba verdadero SIEMPRE, así que cada conexión
+    disparaba una descarga nueva. Terminó en 1.644.074 pedidos a
+    check.torproject.org en dos días. Ahora la lista la mantiene Secure-Intel,
+    que baja una vez cada seis horas pase lo que pase.
+    """
+    carpeta = buscar(raiz)
+    if carpeta is None:
+        return None
+    ruta_src = str(carpeta / "src")
+    if ruta_src not in sys.path:
+        sys.path.insert(0, ruta_src)
+    try:
+        from secureintel.base import Intel, buscar_base
+
+        intel = Intel(buscar_base(carpeta.parent))
+        try:
+            if not intel.disponible():
+                return None
+            return bool(intel.es_tor(ip))
+        finally:
+            intel.close()
+    except Exception:  # noqa: BLE001
+        return None

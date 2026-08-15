@@ -132,7 +132,21 @@ class FilterEngine:
         host = normalizar_host_de_trafico(host) or host
 
         if self.allowlist is not None and self.allowlist.is_allowed(host):
-            return FilterDecision(blocked=False, reason="dominio en allowlist")
+            # La allowlist gana sobre reputación y listas de amenazas, pero no
+            # sobre la barrera que impide usar el proxy como pivote hacia la
+            # máquina o la LAN. Un nombre público permitido también puede
+            # resolver a 127.0.0.1 o a una dirección privada.
+            resolved_ip = resolve_host_to_ip(host)
+            if (resolved_ip is not None
+                    and not self.allow_internal_destinations
+                    and _es_ip_interna(resolved_ip)):
+                return FilterDecision(
+                    blocked=True,
+                    reason=f"{host} resuelve a la direccion interna {resolved_ip}",
+                    resolved_ip=resolved_ip,
+                )
+            return FilterDecision(
+                blocked=False, reason="dominio en allowlist", resolved_ip=resolved_ip)
 
         if self.mining_list is not None and self.mining_list.is_blocked(host):
             return FilterDecision(
